@@ -2,9 +2,9 @@
 % Please edit documentation in R/vis.R
 \name{plot_bulks}
 \alias{plot_bulks}
-\title{Plot a group of pseudobulks HMM profile}
+\title{Plot a group of pseudobulk HMM profiles}
 \usage{
-plot_bulks(bulks, ..., ncol = 1, title = TRUE)
+plot_bulks(bulks, ..., ncol = 1, title = TRUE, title_size = 8)
 }
 \arguments{
 \item{bulks}{dataframe Pseudobulk profiles annotated with "sample" column}
@@ -14,12 +14,14 @@ plot_bulks(bulks, ..., ncol = 1, title = TRUE)
 \item{ncol}{integer Number of columns}
 
 \item{title}{logical Whether to add titles to individual plots}
+
+\item{title_size}{numeric Size of titles}
 }
 \value{
 a ggplot object
 }
 \description{
-Plot a group of pseudobulks HMM profile
+Plot a group of pseudobulk HMM profiles
 }
 \examples{
 p = plot_bulks(bulk_example)

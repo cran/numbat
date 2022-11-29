@@ -9,7 +9,9 @@
 choose_ref_cor = function(count_mat, lambdas_ref, gtf) {
 
     if (any(duplicated(rownames(lambdas_ref)))) {
-        log_err('Duplicated genes in lambdas_ref')
+        msg = 'Duplicated genes in lambdas_ref'
+        log_error(msg)
+        stop(msg)
     }
 
     if (ncol(lambdas_ref) == 1) {
@@ -228,11 +230,24 @@ get_allele_bulk = function(df_allele, nu = 1, min_depth = 0) {
         group_by(CHROM) %>%
         filter(n() > 1) %>%
         mutate(
-            inter_snp_cm = c(NA, cM[2:length(cM)] - cM[1:(length(cM)-1)]),
+            inter_snp_cm = get_inter_cm(cM),
             p_s = switch_prob_cm(inter_snp_cm, nu = nu)
         ) %>%
         ungroup() %>%
-        mutate(gene = ifelse(gene == '', NA, gene))
+        mutate(gene = ifelse(gene == '', NA, gene)) %>% 
+        mutate(gene = as.character(gene))
+}
+
+#' Helper function to get inter-SNP distance
+#' @param d numeric vector Genetic positions in centimorgan (cM)
+#' @return numeric vector Inter-SNP genetic distances 
+#' @keywords internal
+get_inter_cm = function(d) {
+    if (length(d) <= 1) {
+        return(NA)
+    } else {
+        return(c(NA, d[2:length(d)] - d[1:(length(d)-1)]))
+    }
 }
 
 #' Combine allele and expression pseudobulks
@@ -307,6 +322,7 @@ get_lambdas_bar = function(lambdas_ref, sc_refs, verbose = TRUE) {
 #' @param lambdas_ref matrix Reference expression profiles
 #' @param df_allele dataframe Single-cell allele counts
 #' @param gtf dataframe Transcript gtf
+#' @param subset vector Subset of cells to aggregate
 #' @param min_depth integer Minimum coverage to filter SNPs
 #' @param nu numeric Phase switch rate
 #' @param verbose logical Verbosity
@@ -318,9 +334,18 @@ get_lambdas_bar = function(lambdas_ref, sc_refs, verbose = TRUE) {
 #'     df_allele = df_allele_example,
 #'     gtf = gtf_hg38)
 #' @export
-get_bulk = function(count_mat, lambdas_ref, df_allele, gtf, min_depth = 0, nu = 1, verbose = TRUE) {
+get_bulk = function(count_mat, lambdas_ref, df_allele, gtf, subset = NULL, min_depth = 0, nu = 1, verbose = TRUE) {
 
     count_mat = check_matrix(count_mat)
+
+    if (!is.null(subset)) {
+        if (!all(subset %in% colnames(count_mat))) {
+            stop('All requested cells must be present in count_mat')
+        } else {
+            count_mat = count_mat[,subset,drop=FALSE]
+            df_allele = df_allele %>% filter(cell %in% subset)
+        }
+    }
 
     fit = fit_ref_sse(rowSums(count_mat), lambdas_ref, gtf)
 
@@ -365,7 +390,9 @@ get_bulk = function(count_mat, lambdas_ref, df_allele, gtf, min_depth = 0, nu = 
 fit_ref_sse = function(Y_obs, lambdas_ref, gtf, min_lambda = 2e-6, verbose = FALSE) {
 
     if (any(duplicated(rownames(lambdas_ref)))) {
-        log_err('Duplicated genes in lambdas_ref')
+        msg = 'Duplicated genes in lambdas_ref'
+        log_error(msg)
+        stop(msg)
     }
 
     if (length(dim(lambdas_ref)) == 1 | is.null(dim(lambdas_ref))) {
@@ -445,7 +472,7 @@ switch_prob_cm = function(d, nu = 1, min_p = 1e-10) {
 #' @param phasing logical Whether to use phasing information (internal use only)
 #' @param verbose logical Verbosity
 #' @examples
-#' bulk_analyzed = analyze_bulk(bulk_example, t = 1e-5)
+#' bulk_analyzed = analyze_bulk(bulk_example, t = 1e-5, find_diploid = FALSE, retest = FALSE)
 #' @return a pseudobulk profile dataframe with called CNV information
 #' @export
 analyze_bulk = function(
@@ -458,12 +485,14 @@ analyze_bulk = function(
 ) {
     
     if (!is.numeric(t)) {
-        stop('transition probability is not numeric')
+        stop('Transition probability is not numeric')
     }
 
-    if ('gamma' %in% colnames(bulk)) {
-        bulk = bulk %>% select(-gamma)
+    if (all(is.na(bulk$DP))) {
+        stop('No allele data')
     }
+
+    bulk = bulk %>% select(-any_of(c('gamma')))
 
     # update transition probablity
     bulk = bulk %>% mutate(p_s = switch_prob_cm(inter_snp_cm, nu = UQ(nu)))
@@ -1090,7 +1119,8 @@ find_common_diploid = function(
     } else {
         test_dat = bulks_bal %>%
             select(gene, seg, lnFC, sample) %>%
-            reshape2::dcast(seg+gene ~ sample, value.var = 'lnFC') %>%
+            as.data.table %>%
+            data.table::dcast(seg+gene ~ sample, value.var = 'lnFC') %>%
             na.omit() %>%
             mutate(seg = as.character(seg)) %>%
             select(-gene)
@@ -1147,7 +1177,8 @@ find_common_diploid = function(
                     lnFC = mean(lnFC, na.rm = TRUE),
                     .groups = 'drop'
                 ) %>%
-                reshape2::dcast(sample ~ component, value.var = 'lnFC') %>%
+                as.data.table %>%
+                data.table::dcast(sample ~ component, value.var = 'lnFC') %>%
                 tibble::column_to_rownames('sample')
 
         } else {
@@ -1671,7 +1702,7 @@ detect_clonal_loh = function(bulk, t = 1e-5, min_depth = 0) {
         select(CHROM, seg, seg_start, seg_end, snp_rate, loh)
 
     if (nrow(segs_loh) == 0) {
-        segs_loh = data.frame()
+        segs_loh = NULL
     }
     
     return(segs_loh)
@@ -1694,78 +1725,6 @@ get_clone_profile = function(joint_post, clone_post) {
 }
 
 ########################### Misc ############################
-
-log_mem = function() {
-    m = pryr::mem_used()
-    msg = paste0('Mem used: ', signif(m/1e9, 3), 'Gb')
-    log_message(msg)
-}
-
-log_message = function(msg, verbose = TRUE) {
-    log_info(msg)
-    if (verbose) {
-        message(msg)
-    }
-}
-
-log_err = function(msg) {
-    log_error(msg)
-    stop(msg)
-}
-
-#' check the format of a count matrix
-#' @keywords internal
-check_matrix = function(count_mat) {
-    if ('matrix' %in% class(count_mat)) {
-        count_mat <- as(Matrix(count_mat, sparse=TRUE), "dgCMatrix")
-    }
-    if (!('dgCMatrix' %in% class(count_mat))) {
-        log_err("count_mat is not of class dgCMatrix or matrix")
-    }
-    if (!is.numeric(count_mat@x)) {
-        log_err("The parameter 'count_mat' must be of type 'integer'. Please fix.")
-    }
-    if (all(count_mat@x != as.integer(count_mat@x))) {
-        log_err("The parameter 'count_mat' must be of type 'integer'. Please fix.")
-    }
-    if (any(duplicated(rownames(count_mat)))) {
-        log_err("Please remove duplicated genes in count matrix")
-    }
-    return(count_mat)
-}
-
-#' check the format of a allele dataframe
-#' @keywords internal
-check_allele_df = function(df) {
-
-    snps = df %>% 
-        filter(GT != '') %>% 
-        group_by(snp_id) %>%
-        summarise(
-            n = length(unique(GT))
-        )
-    
-    if (any(snps$n > 1)) {
-        log_err('Inconsistent SNP genotypes; Are cells from two different individuals mixed together?')
-    }
-
-    df = df %>% mutate(CHROM = factor(CHROM, 1:22))
-
-    return(df)
-
-}
-
-#' check the format of lambdas_ref
-#' @keywords internal
-check_exp_ref = function(lambdas_ref) {
-
-    if (!is.matrix(lambdas_ref)) {
-        lambdas_ref = as.matrix(lambdas_ref) %>% magrittr::set_colnames('ref')
-    }
-
-    return(lambdas_ref)
-
-}
 
 #' Calculate simes' p
 #' @keywords internal

@@ -8,15 +8,13 @@
 #' @import tidygraph
 #' @import ggplot2
 #' @import ggraph
+#' @importFrom scistreer perform_nni get_mut_graph score_tree annotate_tree mut_to_tree to_phylo
 #' @importFrom ggtree %<+%
 #' @importFrom methods is as
-#' @importFrom parallel mclapply
 #' @importFrom igraph vcount ecount E V V<- E<-
 #' @import patchwork
-#' @importFrom RcppParallel RcppParallelLibs
 #' @importFrom grDevices colorRampPalette
 #' @importFrom stats as.dendrogram as.dist cor cutree dbinom dnbinom dnorm dpois end hclust integrate model.matrix na.omit optim p.adjust pnorm reorder rnorm setNames start t.test as.ts complete.cases is.leaf na.contiguous
-#' @import stringr
 #' @import tibble
 #' @importFrom utils combn
 #' @useDynLib numbat
@@ -257,16 +255,23 @@ run_numbat = function(
             p = plot_bulks(bulk_subtrees, min_LLR = min_LLR, use_pos = TRUE, genome = genome)
             ggsave(
                 glue('{out_dir}/bulk_subtrees_{i}.png'), p, 
-                width = 12, height = 2*length(unique(bulk_subtrees$sample)), dpi = 250
+                width = 13, height = 2*length(unique(bulk_subtrees$sample)), dpi = 250
             )
+        }
+
+        # diagnostics
+        if (i == 1) {
+            bulk_subtrees %>% filter(sample == 0) %>% check_contam()
+            bulk_subtrees %>% filter(sample == 0) %>% check_exp_noise()
         }
 
         # find consensus CNVs
         segs_consensus = bulk_subtrees %>% 
             get_segs_consensus(min_LLR = min_LLR, min_overlap = min_overlap, retest = TRUE)
 
+        # check termination
         if (all(segs_consensus$cnv_state_post == 'neu')) {
-            msg = 'No CNV remains after filtering - terminating.'
+            msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
             log_message(msg)
             return(msg)
         }
@@ -276,6 +281,7 @@ run_numbat = function(
                 bulk_subtrees,
                 segs_consensus, 
                 diploid_chroms = diploid_chroms, 
+                gamma = gamma,
                 min_LLR = min_LLR,
                 ncores = ncores
             )
@@ -284,6 +290,13 @@ run_numbat = function(
         
         segs_consensus = bulk_subtrees %>%
             get_segs_consensus(min_LLR = min_LLR, min_overlap = min_overlap, retest = FALSE)
+
+        # check termination again
+        if (all(segs_consensus$cnv_state_post == 'neu')) {
+            msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
+            log_message(msg)
+            return(msg)
+        }
 
         # retest on clones
         clones = purrr::keep(clones, function(x) x$size > min_cells)
@@ -313,6 +326,7 @@ run_numbat = function(
         bulk_clones = retest_bulks(
             bulk_clones,
             segs_consensus,
+            gamma = gamma,
             use_loh = use_loh,
             min_LLR = min_LLR,
             diploid_chroms = diploid_chroms,
@@ -324,7 +338,7 @@ run_numbat = function(
             p = plot_bulks(bulk_clones, min_LLR = min_LLR, use_pos = TRUE, genome = genome)
             ggsave(
                 glue('{out_dir}/bulk_clones_{i}.png'), p, 
-                width = 12, height = 2*length(unique(bulk_clones$sample)), dpi = 250
+                width = 13, height = 2*length(unique(bulk_clones$sample)), dpi = 250
             )
         }
 
@@ -392,7 +406,7 @@ run_numbat = function(
             filter(avg_entropy < max_entropy & LLR > min_LLR)
 
         if (nrow(joint_post_filtered) == 0) {
-            msg = 'No CNV remains after filtering - terminating.'
+            msg = 'No CNV remains after filtering by entropy in single cells. Consider increasing max_entropy.'
             log_message(msg)
             return(msg)
         } else {
@@ -404,9 +418,9 @@ run_numbat = function(
         p_min = 1e-10
 
         P = joint_post_filtered %>%
-            mutate(p_n = 1 - p_cnv) %>%
-            mutate(p_n = pmax(pmin(p_n, 1-p_min), p_min)) %>%
-            reshape2::dcast(cell ~ seg, value.var = 'p_n', fill = 0.5) %>%
+            mutate(p_cnv = pmax(pmin(p_cnv, 1-p_min), p_min)) %>%
+            as.data.table %>%
+            data.table::dcast(cell ~ seg, value.var = 'p_cnv', fill = 0.5) %>%
             tibble::column_to_rownames('cell') %>%
             as.matrix
 
@@ -417,7 +431,7 @@ run_numbat = function(
         )
 
         # contruct initial tree
-        dist_mat = parallelDist::parDist(rbind(P, 'outgroup' = 1), threads = ncores)
+        dist_mat = parallelDist::parDist(rbind(P, 'outgroup' = 0), threads = ncores)
 
         treeUPGMA = upgma(dist_mat) %>%
             ape::root(outgroup = 'outgroup') %>%
@@ -458,7 +472,7 @@ run_numbat = function(
         saveRDS(tree_post, glue('{out_dir}/tree_post_{i}.rds'))
 
         # simplify mutational history
-        G_m = get_mut_tree(tree_post$gtree, tree_post$mut_nodes)  %>% 
+        G_m = get_mut_graph(tree_post$gtree)  %>% 
             simplify_history(tree_post$l_matrix, max_cost = max_cost) %>% 
             label_genotype()
 
@@ -494,10 +508,11 @@ run_numbat = function(
                     clone_bar = TRUE
                 )
             
-                ggsave(glue('{out_dir}/panel_{i}.png'), panel, width = 8, height = 3.5, dpi = 250)
+                ggsave(glue('{out_dir}/panel_{i}.png'), panel, width = 7.5, height = 3.75, dpi = 250)
             
             },
             error = function(e) { 
+                print(e)
                 log_warn("Plotting phylo-heatmap failed, continuing..")
             })
 
@@ -564,6 +579,7 @@ run_numbat = function(
     bulk_clones = retest_bulks(
         bulk_clones,
         segs_consensus,
+        gamma = gamma,
         use_loh = use_loh,
         min_LLR = min_LLR,
         diploid_chroms = diploid_chroms,
@@ -575,7 +591,7 @@ run_numbat = function(
         p = plot_bulks(bulk_clones, min_LLR = min_LLR, use_pos = TRUE, genome = genome)
         ggsave(
             glue('{out_dir}/bulk_clones_final.png'), p, 
-            width = 12, height = 2*length(unique(bulk_clones$sample)), dpi = 250
+            width = 13, height = 2*length(unique(bulk_clones$sample)), dpi = 250
         )
     }
     
@@ -666,8 +682,9 @@ make_group_bulks = function(groups, count_mat, df_allele, lambdas_ref, gtf, min_
             mc.cores = ncores,
             function(g) {
                 get_bulk(
-                    count_mat = count_mat[,g$cells],
-                    df_allele = df_allele %>% filter(cell %in% g$cells),
+                    count_mat = count_mat,
+                    df_allele = df_allele,
+                    subset = g$cells,
                     lambdas_ref = lambdas_ref,
                     gtf = gtf,
                     min_depth = min_depth
@@ -715,6 +732,8 @@ run_group_hmms = function(
     segs_loh = NULL, exclude_neu = TRUE, ncores = 1, verbose = FALSE, debug = FALSE
 ) {
 
+    # drop samples with no allele data
+    bulks = bulks %>% group_by(sample) %>% filter(sum(!is.na(DP)) > 0) %>% ungroup()
 
     if (nrow(bulks) == 0) {
         return(data.frame())
@@ -1651,7 +1670,8 @@ expand_states = function(sc_post, segs_consensus) {
                 segs_consensus %>% select(seg = seg_cons, cnv_states, n_states),
                 by = 'seg'
             ) %>%
-            reshape2::melt(
+            as.data.table %>% 
+            data.table::melt(
                 measure.vars = c('p_amp', 'p_loh', 'p_del', 'p_bamp', 'p_bdel'),
                 variable.name = 'cnv_state_expand',
                 value.name = 'p_cnv_expand'

@@ -1,10 +1,38 @@
+# numbat 1.1.0 - 11/28/2022
+
+* Externalize phylogeny module as separate package (`scistreer`)
+
+* Prepare for new CRAN version
+
+* Better CNV state legends for `plot_bulks`
+
+# numbat 1.0.5 - 11/27/2022
+
+* Fixing bugs #65, #66, #67
+
+* Retire dependency on `reshape2`
+
+# numbat 1.0.4 - 11/20/2022
+
+* Improving error handling and removing python dependency (`argparse`) in `pileup_and_phase.R`
+
+* Allow plotting of mutliple annotations in `plot_phylo_heatmap` (thanks to @whtns)
+
+* Adding diagnostic messages
+
+# numbat 1.0.3 - 10/09/2022
+
+* Fail gracefully when no CNV remains after `retest_bulks`
+
+* Passing `gamma` parameter to `retest_bulks`
+
 # numbat 1.0.2 - 09/07/2022
 
 * Conform to CRAN guidelines
 
 * Removed ATC2 examples from package data - users can download from lab server link instead
 
-* New option to specify genome version (genome = 'hg38' or 'hg19'). Support plotting of centromeres and gap regions for hg19.
+* New option to specify genome version (`genome = 'hg38' or 'hg19'`). Support plotting of centromeres and gap regions for hg19.
 
 * Removed genetic maps from package data and they are no longer provided as input to `run_numbat`. Annotation of genetic distance is performed in `pileup_and_phase.R` script instead, using the genetic map included in Eagle2.
 
