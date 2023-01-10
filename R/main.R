@@ -8,7 +8,7 @@
 #' @import tidygraph
 #' @import ggplot2
 #' @import ggraph
-#' @importFrom scistreer perform_nni get_mut_graph score_tree annotate_tree mut_to_tree to_phylo
+#' @importFrom scistreer perform_nni get_mut_graph score_tree annotate_tree mut_to_tree ladderize to_phylo
 #' @importFrom ggtree %<+%
 #' @importFrom methods is as
 #' @importFrom igraph vcount ecount E V V<- E<-
@@ -25,7 +25,7 @@ NULL
 #' @param count_mat dgCMatrix Raw count matrices where rownames are genes and column names are cells
 #' @param lambdas_ref matrix Either a named vector with gene names as names and normalized expression as values, or a matrix where rownames are genes and columns are pseudobulk names
 #' @param df_allele dataframe Allele counts per cell, produced by preprocess_allele
-#' @param genome character Genome version (hg38 or hg19) 
+#' @param genome character Genome version (hg38, hg19, or mm10) 
 #' @param out_dir string Output directory
 #' @param gamma numeric Dispersion parameter for the Beta-Binomial allele model
 #' @param t numeric Transition probability
@@ -34,6 +34,7 @@ NULL
 #' @param min_genes integer Minimum number of genes to call a segment
 #' @param max_cost numeric Likelihood threshold to collapse internal branches
 #' @param tau numeric Factor to determine max_cost as a function of the number of cells (0-1)
+#' @param nu numeric Phase switch rate
 #' @param alpha numeric P value cutoff for diploid finding
 #' @param min_overlap numeric Minimum CNV overlap threshold
 #' @param max_iter integer Maximum number of iterations to run the phyologeny optimization
@@ -61,11 +62,11 @@ NULL
 run_numbat = function(
         count_mat, lambdas_ref, df_allele, genome = 'hg38', 
         out_dir = tempdir(), max_iter = 2, max_nni = 100, t = 1e-5, gamma = 20, min_LLR = 5,
-        alpha = 1e-4, eps = 1e-5, max_entropy = 0.5, init_k = 3, min_cells = 50, tau = 0.3,
+        alpha = 1e-4, eps = 1e-5, max_entropy = 0.5, init_k = 3, min_cells = 50, tau = 0.3, nu = 1,
         max_cost = ncol(count_mat) * tau, min_depth = 0, common_diploid = TRUE, min_overlap = 0.45, 
         ncores = 1, ncores_nni = ncores, random_init = FALSE, segs_loh = NULL,
         verbose = TRUE, diploid_chroms = NULL, use_loh = NULL, min_genes = 10,
-        skip_nj = FALSE, multi_allelic = TRUE, p_multi = 1-alpha, 
+        skip_nj = FALSE, multi_allelic = TRUE, p_multi = 1-alpha,
         plot = TRUE, check_convergence = FALSE, exclude_neu = TRUE
     ) {
 
@@ -74,11 +75,14 @@ run_numbat = function(
         gtf = gtf_hg38
     } else if (genome == 'hg19') {
         gtf = gtf_hg19
+    } else if (genome == 'mm10') {
+        gtf = gtf_mm10
     } else {
-        stop('Genome version must be hg38 or hg19')
+        stop('Genome version must be hg38, hg19, or mm10')
     }
 
     count_mat = check_matrix(count_mat)
+    df_allele = annotate_genes(df_allele, gtf)
     df_allele = check_allele_df(df_allele)
     lambdas_ref = check_exp_ref(lambdas_ref)
 
@@ -235,6 +239,7 @@ run_numbat = function(
                 lambdas_ref = lambdas_ref,
                 gtf = gtf,
                 min_depth = min_depth,
+                nu = nu,
                 ncores = ncores)
 
         bulk_subtrees = bulk_subtrees %>%
@@ -242,6 +247,7 @@ run_numbat = function(
                 t = t,
                 gamma = gamma,
                 alpha = alpha,
+                nu = nu,
                 min_genes = min_genes,
                 common_diploid = common_diploid,
                 diploid_chroms = diploid_chroms,
@@ -308,6 +314,7 @@ run_numbat = function(
                 lambdas_ref = lambdas_ref,
                 gtf = gtf,
                 min_depth = min_depth,
+                nu = nu,
                 ncores = ncores)
 
         bulk_clones = bulk_clones %>% 
@@ -315,6 +322,7 @@ run_numbat = function(
                 t = t,
                 gamma = gamma,
                 alpha = alpha,
+                nu = nu,
                 min_genes = min_genes,
                 common_diploid = common_diploid,
                 diploid_chroms = diploid_chroms,
@@ -360,6 +368,7 @@ run_numbat = function(
             use_loh = use_loh,
             segs_loh = segs_loh,
             gtf = gtf,
+            sc_refs = sc_refs,
             ncores = ncores)
 
         haplotype_post = get_haplotype_post(
@@ -496,25 +505,18 @@ run_numbat = function(
 
         if (plot) {
 
-            tryCatch(expr = {
-
-                panel = plot_phylo_heatmap(
-                    gtree,
-                    joint_post,
-                    segs_consensus,
-                    tip_length = 0.2,
-                    branch_width = 0.2,
-                    line_width = 0.1,
-                    clone_bar = TRUE
-                )
-            
-                ggsave(glue('{out_dir}/panel_{i}.png'), panel, width = 7.5, height = 3.75, dpi = 250)
-            
-            },
-            error = function(e) { 
-                print(e)
-                log_warn("Plotting phylo-heatmap failed, continuing..")
-            })
+            panel = plot_phylo_heatmap(
+                gtree,
+                joint_post,
+                segs_consensus,
+                clone_post,
+                tip_length = 0.2,
+                branch_width = 0.2,
+                line_width = 0.1,
+                clone_bar = TRUE
+            )
+        
+            ggsave(glue('{out_dir}/panel_{i}.png'), panel, width = 7.5, height = 3.75, dpi = 250)
 
         }
 
@@ -561,6 +563,7 @@ run_numbat = function(
         lambdas_ref = lambdas_ref,
         gtf = gtf,
         min_depth = min_depth,
+        nu = nu,
         ncores = ncores)
 
     bulk_clones = bulk_clones %>% 
@@ -568,6 +571,7 @@ run_numbat = function(
             t = t,
             gamma = gamma,
             alpha = alpha,
+            nu = nu,
             min_genes = min_genes,
             common_diploid = FALSE,
             diploid_chroms = diploid_chroms,
@@ -668,9 +672,8 @@ exp_hclust = function(count_mat, lambdas_ref, gtf, sc_refs = NULL, window = 101,
 #' @param ncores integer Number of cores
 #' @return dataframe Pseudobulk profiles
 #' @keywords internal 
-make_group_bulks = function(groups, count_mat, df_allele, lambdas_ref, gtf, min_depth = 0, ncores = NULL) {
+make_group_bulks = function(groups, count_mat, df_allele, lambdas_ref, gtf, min_depth = 0, nu = 1, ncores = NULL) {
     
-
     if (length(groups) == 0) {
         return(data.frame())
     }
@@ -687,7 +690,8 @@ make_group_bulks = function(groups, count_mat, df_allele, lambdas_ref, gtf, min_
                     subset = g$cells,
                     lambdas_ref = lambdas_ref,
                     gtf = gtf,
-                    min_depth = min_depth
+                    min_depth = min_depth,
+                    nu = nu
                 ) %>%
                 mutate(
                     n_cells = g$size,
@@ -727,7 +731,7 @@ make_group_bulks = function(groups, count_mat, df_allele, lambdas_ref, gtf, min_
 #' @param allele_only logical Whether only use allele data to run HMM
 #' @keywords internal
 run_group_hmms = function(
-    bulks, t = 1e-4, gamma = 20, alpha = 1e-4, min_genes = 10,
+    bulks, t = 1e-4, gamma = 20, alpha = 1e-4, min_genes = 10, nu = 1,
     common_diploid = TRUE, diploid_chroms = NULL, allele_only = FALSE, retest = TRUE, run_hmm = TRUE,
     segs_loh = NULL, exclude_neu = TRUE, ncores = 1, verbose = FALSE, debug = FALSE
 ) {
@@ -762,6 +766,7 @@ run_group_hmms = function(
             bulk %>% analyze_bulk(
                 t = t,
                 gamma = gamma, 
+                nu = nu,
                 find_diploid = find_diploid, 
                 run_hmm = run_hmm,
                 allele_only = allele_only, 
@@ -1271,11 +1276,11 @@ get_exp_post = function(segs_consensus, count_mat, gtf, lambdas_ref, sc_refs = N
         log_message('Including LOH in baseline as specified')
     }
     
-    cells = colnames(count_mat)
-
     if (is.null(sc_refs)) {
         sc_refs = choose_ref_cor(count_mat, lambdas_ref, gtf)
     }
+
+    cells = names(sc_refs)
 
     results = mclapply(
         cells,
@@ -1305,7 +1310,7 @@ get_exp_post = function(segs_consensus, count_mat, gtf, lambdas_ref, sc_refs = N
     bad = sapply(results, inherits, what = "try-error")
 
     if (any(bad)) {
-        if (verbose) {log_warn(glue('{sum(bad)} jobs failed'))}
+        if (verbose) {log_warn(glue('{sum(bad)} cell(s) failed'))}
         log_warn(results[bad][1])
         log_warn(cells[bad][1])
     } else {
@@ -1549,7 +1554,7 @@ get_joint_post = function(exp_post, allele_post, segs_consensus) {
 #' @return dataframe Retested pseudobulks 
 #' @keywords internal 
 retest_bulks = function(bulks, segs_consensus = NULL,
-    t = 1e-5, min_genes = 10, gamma = 20, 
+    t = 1e-5, min_genes = 10, gamma = 20, nu = 1,
     segs_loh = NULL, use_loh = FALSE, diploid_chroms = NULL, ncores = 1, exclude_neu = TRUE, min_LLR = 5) {
 
     if (is.null(segs_consensus)) {
@@ -1586,6 +1591,7 @@ retest_bulks = function(bulks, segs_consensus = NULL,
         run_group_hmms(
             t = t, 
             gamma = gamma, 
+            nu = nu,
             min_genes = min_genes,
             run_hmm = FALSE,
             exclude_neu = exclude_neu,
@@ -1921,7 +1927,7 @@ if (getRversion() >= "2.15.1"){
     "down", "edges", "end_x", "end_y", "exp_rollmean", "expected_colnames", "extract",
     "frac_overlap_x", "frac_overlap_y", "from", "from_label", "from_node", "gaps_hg19",
     "gaps_hg38", "gene", "gene_end", "gene_index", "gene_length", "gene_snps", "gene_start",
-    "group", "groupOTU", "gtf_hg19", "gtf_hg38", "haplo", "haplo_naive", "haplo_post",
+    "group", "groupOTU", "gtf_hg19", "gtf_hg38", "gtf_mm10", "haplo", "haplo_naive", "haplo_post",
     "haplo_theta_min", "het", "hom_alt", "i", "inter_snp_cm", "inter_snp_dist", "isTip",
     "is_desc", "j", "keep", "l", "l00", "l00_x", "l00_y", "l10", "l10_x", "l10_y", "l11", "l11_x",
     "l11_y", "l20", "l20_x", "l20_y", "l21", "l21_x", "l21_y", "l22", "l22_x", "l22_y", "l31",

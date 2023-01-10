@@ -1,3 +1,11 @@
+# numbat 1.2.0 - 12/26/2022
+
+* Numbat now works for F1 hybrid mice! Check out the new tutorial under `Articles`.
+
+* Fix bugs #80, #82
+
+* Offer stacked clone bars in `plot_phylo_heatmap`
+
 # numbat 1.1.0 - 11/28/2022
 
 * Externalize phylogeny module as separate package (`scistreer`)

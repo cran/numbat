@@ -21,8 +21,7 @@ choose_ref_cor = function(count_mat, lambdas_ref, gtf) {
         return(best_refs)
     }
     
-    genes_annotated = gtf %>% 
-        pull(gene) %>% 
+    genes_annotated = gtf$gene %>% 
         intersect(rownames(count_mat)) %>%
         intersect(rownames(lambdas_ref))
 
@@ -32,9 +31,16 @@ choose_ref_cor = function(count_mat, lambdas_ref, gtf) {
     exp_mat = scale_counts(count_mat)
     # keep highly expressed genes in at least one of the references
     exp_mat = exp_mat[rowSums(lambdas_ref * 1e6 > 2) > 0,,drop=FALSE]
+
+    zero_cov = colnames(exp_mat)[colSums(exp_mat) == 0]
+
+    if (length(zero_cov) > 0) {
+        log_message(glue('Cannot choose reference for {length(zero_cov)} cells due to low coverage'))
+        exp_mat = exp_mat[,!colnames(exp_mat) %in% zero_cov, drop=FALSE]
+    }
     
     cors = cor(as.matrix(log(exp_mat * 1e6 + 1)), log(lambdas_ref * 1e6 + 1)[rownames(exp_mat),])
-    best_refs = apply(cors, 1, function(x) {colnames(cors)[which.max(x)]})
+    best_refs = apply(cors, 1, function(x) {colnames(cors)[which.max(x)]}) %>% unlist()
     
     return(best_refs)
 }
@@ -442,9 +448,16 @@ fit_ref_sse = function(Y_obs, lambdas_ref, gtf, min_lambda = 2e-6, verbose = FAL
 #' @return numeric vector Phase switch probability
 #' @keywords internal
 switch_prob_cm = function(d, nu = 1, min_p = 1e-10) {
-    p = (1-exp(-2*nu*d))/2
-    p = pmax(p, min_p)
+
+    if (nu == 0) {
+        p = rep(0, length(d))
+    } else {
+        p = (1-exp(-2*nu*d))/2
+        p = pmax(p, min_p)
+    }
+
     p = ifelse(is.na(d), 0, p)
+
     return(p)
 }
 
@@ -1140,10 +1153,10 @@ find_common_diploid = function(
             bind_rows() %>%
             rowwise() %>%
             mutate(
-                p = t.test(
+                p = t.test.pval(
                     x = bulks_bal$lnFC[bulks_bal$seg == i & bulks_bal$sample == s],
                     y = bulks_bal$lnFC[bulks_bal$seg == j & bulks_bal$sample == s]
-                )$p.value,
+                ),
                 lnFC_i = mean(bulks_bal$lnFC[bulks_bal$seg == i & bulks_bal$sample == s]),
                 lnFC_j = mean(bulks_bal$lnFC[bulks_bal$seg == j & bulks_bal$sample == s])
             ) %>%
@@ -1730,6 +1743,16 @@ get_clone_profile = function(joint_post, clone_post) {
 #' @keywords internal
 simes_p = function(p.vals, n_dim) {
     n_dim * min(sort(p.vals)/seq_along(p.vals))
+}
+
+#' T-test wrapper, handles error for insufficient observations
+#' @keywords internal
+t.test.pval = function(x, y) {
+    if (length(x) <= 1 | length(y) <= 1) {
+        return(1)
+    } else {
+        return(t.test(x,y)$p.value)
+    }
 }
 
 ## https://github.com/cran/VGAM/blob/391729a24a7b520df09ae857e2098b3e95cb6fca/R/family.others.R

@@ -68,7 +68,7 @@ get_snps = function(vcf) {
 make_vcf_chr = function(chr, snps, vcf_original, label, outdir, het_only = FALSE, chr_prefix = TRUE) {
     
     chr_snps = snps %>%
-        filter(CHROM == chr | CHROM == paste0('chr', chr)) %>%
+        filter(CHROM == chr) %>%
         mutate(
             het = 0.1 <= AR & AR <= 0.9,
             hom_alt = AR == 1 & DP >= 10,
@@ -118,11 +118,11 @@ make_vcf_chr = function(chr, snps, vcf_original, label, outdir, het_only = FALSE
     ) %>% 
     setNames(c('FORMAT', label)) %>% 
     as.matrix
-    
+
     if (chr_prefix) {
         vcf_chr@fix[,1] = paste0('chr', vcf_chr@fix[,1])
     }
-
+      
     file_name = glue('{outdir}/{label}_chr{chr}.vcf.gz')
     
     write.vcf(vcf_chr, file_name)

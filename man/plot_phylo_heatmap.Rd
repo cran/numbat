@@ -8,13 +8,15 @@ plot_phylo_heatmap(
   gtree,
   joint_post,
   segs_consensus,
+  clone_post = NULL,
   p_min = 0.9,
   annot = NULL,
   pal_annot = NULL,
   annot_title = "Annotation",
   annot_scale = NULL,
   clone_dict = NULL,
-  clone_bar = FALSE,
+  clone_bar = TRUE,
+  clone_stack = TRUE,
   pal_clone = NULL,
   clone_title = "Genotype",
   clone_legend = TRUE,
@@ -25,8 +27,8 @@ plot_phylo_heatmap(
   annot_bar_width = 0.25,
   clone_bar_width = 0.25,
   bar_label_size = 7,
+  tvn_line = TRUE,
   clone_line = FALSE,
-  superclone = FALSE,
   exclude_gap = FALSE,
   root_edge = TRUE,
   raster = FALSE,
@@ -39,6 +41,8 @@ plot_phylo_heatmap(
 \item{joint_post}{dataframe Joint single cell CNV posteriors}
 
 \item{segs_consensus}{datatframe Consensus segment dataframe}
+
+\item{clone_post}{dataframe Clone assignment posteriors}
 
 \item{p_min}{numeric Probability threshold to display CNV calls}
 
@@ -53,6 +57,8 @@ plot_phylo_heatmap(
 \item{clone_dict}{named vector Clone annotations, mapping from cell name to clones}
 
 \item{clone_bar}{logical Whether to display clone bar plot}
+
+\item{clone_stack}{character Whether to plot clone assignment probabilities as stacked bar}
 
 \item{pal_clone}{named vector Clone colors}
 
@@ -74,9 +80,9 @@ plot_phylo_heatmap(
 
 \item{bar_label_size}{numeric Size of sidebar text labels}
 
-\item{clone_line}{logical Whether to display borders for clones in the heatmap}
+\item{tvn_line}{logical Whether to draw line separating tumor and normal cells}
 
-\item{superclone}{logical Wehether to display superclones in the clone bar}
+\item{clone_line}{logical Whether to display borders for clones in the heatmap}
 
 \item{exclude_gap}{logical Whether to mark gap regions}
 

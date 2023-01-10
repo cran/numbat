@@ -133,18 +133,20 @@ plot_psbulk = function(
     if (use_pos & exclude_gap) {
 
         if (genome == 'hg38') {
-            gaps = gaps_hg38
+            gaps = gaps_hg38 %>% filter(end - start > 1e+06)
             acen = acen_hg38
         } else if (genome == 'hg19') {
-            gaps = gaps_hg19
+            gaps = gaps_hg19 %>% filter(end - start > 1e+06)
             acen = acen_hg19
+        } else if (genome == 'mm10') {
+            gaps = data.frame(CHROM = 1, start = 1, end = 1)
+            acen = data.frame()
         } else {
-            stop("Genome version must be hg38 or hg19")
+            stop("Genome version must hg38, hg19 or mm10")
         }
 
-        segs_exclude = gaps %>%
-            filter(end - start > 1e+06) %>%
-            rbind(acen) %>%
+        segs_exclude = rbind(gaps, acen) %>%
+            mutate(CHROM = factor(as.integer(CHROM))) %>%
             rename(seg_start = start, seg_end = end) %>%
             filter(CHROM %in% bulk$CHROM)
 
@@ -455,6 +457,7 @@ plot_mut_history = function(
 #' @param gtree tbl_graph The single-cell phylogeny
 #' @param joint_post dataframe Joint single cell CNV posteriors
 #' @param segs_consensus datatframe Consensus segment dataframe
+#' @param clone_post dataframe Clone assignment posteriors
 #' @param p_min numeric Probability threshold to display CNV calls
 #' @param annot dataframe Cell annotations, dataframe with 'cell' and additional annotation columns
 #' @param pal_annot named vector Colors for cell annotations
@@ -462,6 +465,7 @@ plot_mut_history = function(
 #' @param annot_scale ggplot scale Color scale for the annotation bar
 #' @param clone_dict named vector Clone annotations, mapping from cell name to clones
 #' @param clone_bar logical Whether to display clone bar plot
+#' @param clone_stack character Whether to plot clone assignment probabilities as stacked bar
 #' @param clone_title character Legend title for the clone bar
 #' @param clone_legend logical Whether to display the clone legend
 #' @param tree_height numeric Relative height of the phylogeny plot
@@ -472,8 +476,8 @@ plot_mut_history = function(
 #' @param clone_bar_width numeric Width of clone genotype bar
 #' @param bar_label_size numeric Size of sidebar text labels
 #' @param clone_line logical Whether to display borders for clones in the heatmap
-#' @param superclone logical Wehether to display superclones in the clone bar
 #' @param pal_clone named vector Clone colors
+#' @param tvn_line logical Whether to draw line separating tumor and normal cells
 #' @param root_edge logical Whether to plot root edge
 #' @param exclude_gap logical Whether to mark gap regions
 #' @param show_phylo logical Whether to display phylogeny on y axis
@@ -486,12 +490,12 @@ plot_mut_history = function(
 #'     segs_consensus = segs_example)
 #' @export
 plot_phylo_heatmap = function(
-        gtree, joint_post, segs_consensus, p_min = 0.9, 
+        gtree, joint_post, segs_consensus, clone_post = NULL, p_min = 0.9, 
         annot = NULL, pal_annot = NULL, annot_title = 'Annotation', annot_scale = NULL,
-        clone_dict = NULL, clone_bar = FALSE, pal_clone = NULL, clone_title = 'Genotype', clone_legend = TRUE,
+        clone_dict = NULL, clone_bar = TRUE, clone_stack = TRUE, pal_clone = NULL, clone_title = 'Genotype', clone_legend = TRUE,
         line_width = 0.1, tree_height = 1, branch_width = 0.2, tip_length = 0.2,
-        annot_bar_width = 0.25, clone_bar_width = 0.25, bar_label_size = 7, 
-        clone_line = FALSE, superclone = FALSE, exclude_gap = FALSE, root_edge = TRUE, raster = FALSE, show_phylo = TRUE
+        annot_bar_width = 0.25, clone_bar_width = 0.25, bar_label_size = 7, tvn_line = TRUE,
+        clone_line = FALSE, exclude_gap = FALSE, root_edge = TRUE, raster = FALSE, show_phylo = TRUE
     ) {
 
     # make sure chromosomes are in order
@@ -514,67 +518,54 @@ plot_phylo_heatmap = function(
             mutate(cnv_state = ifelse(n_states > 1, cnv_state_map, cnv_state))
     }
 
-    if (!'clone' %in% colnames(data.frame(activate(gtree, 'nodes')))) {
-        gtree = gtree %>%
-            activate(nodes) %>%
-            mutate(clone = as.integer(factor(GT)))
-    }
-
-    if (superclone) {
-        gtree = gtree %>% activate(nodes) %>% mutate(clone = superclone)
-    }
-
-    gtree = mark_tumor_lineage(gtree)
-
-    gtree = gtree %>% activate(edges) %>% mutate(length = ifelse(leaf, tip_length, length))
-
-    # plot phylogeny
-    if (show_phylo){
-    	p_tree = gtree %>%
-    		to_phylo() %>%
-    		ggtree::ggtree(ladderize = TRUE, size = branch_width) +
-    		theme(
-    			plot.margin = margin(0,1,0,0, unit = 'mm'),
-    			axis.title.x = element_blank(),
-    			axis.ticks.x = element_blank(),
-    			axis.text.x = element_blank(),
-    			axis.line.y = element_blank(),
-    			axis.ticks.y = element_blank(),
-    			# axis.text.y = element_text(size = 5)
-    			axis.text.y = element_blank(),
-    			panel.background = element_rect(fill = "transparent",colour = NA),
-    			plot.background = element_rect(fill = "transparent", color = NA)
-    		) +
-    		guides(color = 'none')
-
-    	if (root_edge) {
-    		p_tree = p_tree + ggtree::geom_rootedge(size = branch_width)
-    	}
-
-    	# order the cells
-    	cell_order = p_tree$data %>% filter(isTip) %>% arrange(y) %>% pull(label)
+    # inspect gtree object
+    if (is(gtree, "tbl_graph")) {
+        gtree = gtree %>% activate(edges) %>% mutate(length = ifelse(leaf, tip_length, length))
+        tree_obj = gtree %>% to_phylo() %>% ladderize(right = FALSE)
     } else {
-    	p_tree = gtree %>%
-    		ape::as.phylo() %>%
-    		ape::ladderize(right = FALSE)
+        tree_obj = gtree
+        tvn_line = FALSE
+        clone_bar = FALSE
+    }
 
-    	cell_order = rev(p_tree$tip.label)
+    cell_order = get_ordered_tips(tree_obj)
 
-    	p_tree = ggplot() + theme_void()
+    if (show_phylo) {
+        p_tree = tryCatch(expr = {
+            p_tree = tree_obj %>%
+                ggtree::ggtree(ladderize = FALSE, size = branch_width) +
+                theme(
+                    plot.margin = margin(0,1,0,0, unit = 'mm'),
+                    axis.title.x = element_blank(),
+                    axis.ticks.x = element_blank(),
+                    axis.text.x = element_blank(),
+                    axis.line.y = element_blank(),
+                    axis.ticks.y = element_blank(),
+                    axis.text.y = element_blank(),
+                    panel.background = element_rect(fill = "transparent",colour = NA),
+                    plot.background = element_rect(fill = "transparent", color = NA)
+                ) +
+                guides(color = 'none')
+
+            if (root_edge) {
+                p_tree = p_tree + ggtree::geom_rootedge(size = branch_width)
+            }
+        },
+        error = function(e) {
+            print(e)
+            log_warn("Plotting phylogeny failed, continuing..")
+
+            p_tree = ggplot() + theme_void()
+
+            return(p_tree)
+        })
+    } else {
+        p_tree = ggplot() + theme_void()
     }
 
     joint_post = joint_post %>%
         mutate(cell = factor(cell, cell_order)) %>%
         mutate(cell_index = as.integer(droplevels(cell)))
-
-    # add tumor vs normal line
-    tumor_cells = gtree %>%
-        activate(nodes) %>% filter(leaf) %>%
-        as.data.frame() %>%
-        filter(compartment == 'tumor') %>%
-        pull(name)
-
-    first_tumor_index = which(cell_order %in% tumor_cells)[1]
 
     chrom_labeller <- function(chr) {
         chr[chr %in% c(19, 21, 22)] = ''
@@ -600,7 +591,6 @@ plot_phylo_heatmap = function(
             aes(x = seg_start, xend = seg_end, y = 1, yend = 1),
             data = segs_consensus, size = 0, color = 'white', alpha = 0
         ) +
-        geom_hline(yintercept = first_tumor_index, color = 'royalblue', size = 0.5, linetype = 'dashed') +
         theme(
             panel.spacing = unit(0, 'mm'),
             panel.border = element_rect(size = 0.5, color = 'gray', fill = NA),
@@ -633,6 +623,23 @@ plot_phylo_heatmap = function(
         ) +
         xlab('Genomic position')
 
+    # add tumor vs normal line
+    if (tvn_line) {
+
+        gtree = mark_tumor_lineage(gtree)
+
+        tumor_cells = gtree %>%
+            activate(nodes) %>% filter(leaf) %>%
+            as.data.frame() %>%
+            filter(compartment == 'tumor') %>%
+            pull(name)
+
+        first_tumor_index = which(cell_order %in% tumor_cells)[1]
+
+        p_segs = p_segs + geom_hline(yintercept = first_tumor_index, color = 'royalblue', size = 0.5, linetype = 'dashed')
+
+    }
+
     if (exclude_gap) {
 
         segs_exclude = gaps_hg38 %>%
@@ -654,42 +661,52 @@ plot_phylo_heatmap = function(
             )
     }
 
-    # clone annotation
-    if (is.null(clone_dict)) {
-        clone_dict = gtree %>%
-            activate(nodes) %>%
-            data.frame %>%
-            mutate(
-                GT = ifelse(compartment == 'normal', '', GT),
-                GT = factor(GT),
-                clone = ifelse(compartment == 'normal', 1, clone),
-                clone = factor(clone)
-            ) %>%
-            {setNames(.$clone, .$name)}
-    }
+    if (clone_bar) {
+        
+        # clone annotation
+        if (is.null(clone_dict)) {
+            clone_dict = gtree %>%
+                activate(nodes) %>%
+                data.frame %>%
+                mutate(clone = factor(clone)) %>%
+                {setNames(.$clone, .$name)}
 
-    if (is.null(pal_clone)) {
-
-        getPalette = colorRampPalette(c("#9E0142", "#D53E4F", "#F46D43", "#FDAE61", "#FEE08B", "#E6F598", "#ABDDA4", "#66C2A5", "#3288BD", "#5E4FA2"))
-
-        pal_clone = getPalette(length(unique(clone_dict)))
-
-        if ('1' %in% unique(clone_dict)) {
-            pal_clone = c('gray', pal_clone)
+            normal_clones = gtree %>%
+                activate(nodes) %>%
+                data.frame %>%
+                filter(compartment == 'normal') %>%
+                pull(clone) %>% unique
         }
 
-    }
+        if (is.null(pal_clone)) {
 
-    p_clone = data.frame(
-            cell = names(clone_dict),
-            annot = unname(clone_dict)
-        ) %>%
-        mutate(cell = factor(cell, cell_order)) %>%
-        filter(!is.na(cell)) %>%
-        annot_bar(
-            transpose = TRUE, legend = clone_legend, pal_annot = pal_clone,
-            legend_title = clone_title, label_size = bar_label_size, size = size, raster = raster
-        )
+            getPalette = colorRampPalette(c("#9E0142", "#D53E4F", "#F46D43", "#FDAE61", "#FEE08B", "#E6F598", "#ABDDA4", "#66C2A5", "#3288BD", "#5E4FA2"))
+            pal_clone = getPalette(max(as.integer(levels(clone_dict))))
+            pal_clone = setNames(pal_clone, as.character(1:length(pal_clone)))
+            pal_clone[c(normal_clones,1)] = 'gray'
+
+        }
+
+        if (!is.null(clone_post) & clone_stack) {
+
+            p_clone = clone_post %>% 
+                mutate(cell = factor(cell, cell_order)) %>%
+                plot_stack_bar(title = clone_title, pal = pal_clone, legend = clone_legend)
+            
+        } else {
+
+            p_clone = data.frame(
+                cell = names(clone_dict),
+                annot = unname(clone_dict)
+            ) %>%
+            mutate(cell = factor(cell, cell_order)) %>%
+            filter(!is.na(cell)) %>%
+            annot_bar(
+                transpose = TRUE, legend = clone_legend, pal_annot = pal_clone,
+                legend_title = clone_title, label_size = bar_label_size, size = size, raster = raster
+            )
+        }
+    }
 
     # add clone lines
     if (clone_line) {
@@ -747,6 +764,109 @@ plot_phylo_heatmap = function(
         (p_tree | p_segs) + plot_layout(widths = c(tree_height, 15), guides = 'collect')
     }
 }
+
+plot_stack_bar = function(clone_post, title = 'Genotype', legend = TRUE, pal = NULL, label_size = 5) {
+
+    p = clone_post %>%
+        select(cell, matches('p_[[:digit:]]+$')) %>%
+        as.data.table() %>%
+        data.table::melt(id.vars = 'cell', variable.name = 'clone', value = 'p') %>%
+        mutate(clone = factor(as.integer(str_remove(clone, 'p_')))) %>%
+        ggplot(
+            aes(x = p, y = cell, fill = clone)
+        ) +
+        geom_col() +
+        theme_void() +
+        scale_y_discrete(expand = expansion(0)) +
+        scale_x_continuous(expand = expansion(0), breaks = c(0.5), labels = c('Genotype')) +
+        theme(
+            panel.spacing = unit(0.1, 'mm'),
+            panel.border = element_rect(size = 0, color = 'black', fill = NA),
+            panel.background = element_rect(fill = 'gray90'),
+            strip.background = element_blank(),
+            strip.text = element_blank(),
+            axis.text.y = element_blank(),
+            axis.text.x = element_text(angle = 30, size = label_size, hjust = 1, vjust = 1),
+            plot.margin = margin(0.5,0,0.5,0, unit = 'mm')
+        ) 
+
+        if (legend) {
+            p = p + guides(fill = guide_legend(keywidth = unit(3, 'mm'), keyheight = unit(1, 'mm'), title = title))
+        } else {
+            p = p + guides(fill = 'none')
+        }
+
+        if (!is.null(pal)) {
+            p = p + scale_fill_manual(values = pal, na.value = 'gray90', limits = force)
+        }
+
+    return(p)
+}
+
+# expect columns cell and annot
+#' @keywords internal
+annot_bar = function(
+    D, transpose = FALSE, legend = TRUE, legend_title = '', size = 0.05, label_size = 5,
+    pal_annot = NULL, annot_scale = NULL, raster = FALSE
+) {
+
+    D = D %>% mutate(cell_index = as.integer(cell))
+
+    index_max = length(levels(D$cell))
+
+    p = ggplot(
+        D,
+        aes(x = cell_index, y = legend_title, fill = annot)
+    ) +
+    geom_tile(width=1, height=0.9, size = 0) +
+    # geom_segment(
+    #     aes(x = cell, xend = cell, y = -0.5, yend = 0.5, color = annot),
+    #     size = size
+    # ) +
+    theme_void() +
+    scale_y_discrete(expand = expansion(0)) +
+    scale_x_continuous(expand = expansion(0), limits = c(1,index_max)) +
+    theme(
+        panel.spacing = unit(0.1, 'mm'),
+        panel.border = element_rect(size = 0, color = 'black', fill = NA),
+        panel.background = element_rect(fill = 'gray90'),
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        # axis.text = element_text(size = 8),
+        axis.text.y = element_blank(),
+        axis.text.x = element_text(angle = 30, size = label_size, hjust = 1, vjust = 1),
+        plot.margin = margin(0.5,0,0.5,0, unit = 'mm')
+    )
+
+    if (!is.null(annot_scale)) {
+        p = p + annot_scale
+    } else {
+        if (is.null(pal_annot)) {
+            pal = c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00", "#FFFF33", "#A65628", "#F781BF")
+            getPalette = colorRampPalette(pal)
+            pal_annot = getPalette(length(unique(D$annot)))
+        }
+        p = p + scale_fill_manual(values = pal_annot, na.value = 'gray90', limits = force)
+    }
+
+    if (transpose) {
+        p = p + coord_flip() +
+            theme(plot.margin = margin(0,0.5,0,0.5, unit = 'mm'))
+    }
+
+    if (legend) {
+        p = p + guides(fill = guide_legend(keywidth = unit(3, 'mm'), keyheight = unit(1, 'mm'), title = legend_title))
+    } else {
+        p = p + guides(fill = 'none')
+    }
+
+    if (raster) {
+        p = ggrastr::rasterize(p, layers = 'Tile', dpi = 300)
+    }
+
+    return(p)
+}
+
 
 
 #' Plot consensus CNVs
@@ -1065,70 +1185,6 @@ cnv_heatmap = function(segs, var = 'group', label_group = TRUE, legend = TRUE, e
 
 }
 
-
-# expect columns cell and annot
-#' @keywords internal
-annot_bar = function(
-    D, transpose = FALSE, legend = TRUE, legend_title = '', size = 0.05, label_size = 5,
-    pal_annot = NULL, annot_scale = NULL, raster = FALSE
-) {
-
-    D = D %>% mutate(cell_index = as.integer(cell))
-
-    index_max = length(levels(D$cell))
-
-    p = ggplot(
-        D,
-        aes(x = cell_index, y = legend_title, fill = annot)
-    ) +
-    geom_tile(width=1, height=0.9, size = 0) +
-    # geom_segment(
-    #     aes(x = cell, xend = cell, y = -0.5, yend = 0.5, color = annot),
-    #     size = size
-    # ) +
-    theme_void() +
-    scale_y_discrete(expand = expansion(0)) +
-    scale_x_continuous(expand = expansion(0), limits = c(1,index_max)) +
-    theme(
-        panel.spacing = unit(0.1, 'mm'),
-        panel.border = element_rect(size = 0, color = 'black', fill = NA),
-        panel.background = element_rect(fill = 'gray90'),
-        strip.background = element_blank(),
-        strip.text = element_blank(),
-        # axis.text = element_text(size = 8),
-        axis.text.y = element_blank(),
-        axis.text.x = element_text(angle = 30, size = label_size, hjust = 1, vjust = 1),
-        plot.margin = margin(0.5,0,0.5,0, unit = 'mm')
-    )
-
-    if (!is.null(annot_scale)) {
-        p = p + annot_scale
-    } else {
-        if (is.null(pal_annot)) {
-            pal = c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00", "#FFFF33", "#A65628", "#F781BF")
-            getPalette = colorRampPalette(pal)
-            pal_annot = getPalette(length(unique(D$annot)))
-        }
-        p = p + scale_fill_manual(values = pal_annot, na.value = 'gray90')
-    }
-
-    if (transpose) {
-        p = p + coord_flip() +
-            theme(plot.margin = margin(0,0.5,0,0.5, unit = 'mm'))
-    }
-
-    if (legend) {
-        p = p + guides(fill = guide_legend(keywidth = unit(3, 'mm'), keyheight = unit(1, 'mm'), title = legend_title))
-    } else {
-        p = p + guides(fill = 'none')
-    }
-
-    if (raster) {
-        p = ggrastr::rasterize(p, layers = 'Tile', dpi = 300)
-    }
-
-    return(p)
-}
 
 
 ########################### Functions for internal use ############################
