@@ -53,6 +53,8 @@ NULL
 #' @param skip_nj logical Whether to skip NJ tree construction and only use UPGMA
 #' @param diploid_chroms vector Known diploid chromosomes
 #' @param segs_loh dataframe Segments of clonal LOH to be excluded
+#' @param call_clonal_loh logical Whether to call segments with clonal LOH
+#' @param segs_consensus_fix dataframe Pre-determined segmentation of consensus CNVs
 #' @param check_convergence logical Whether to terminate iterations based on consensus CNV convergence 
 #' @param random_init logical Whether to initiate phylogney using a random tree (internal use only)
 #' @param exclude_neu logical Whether to exclude neutral segments from CNV retesting (internal use only)
@@ -65,11 +67,17 @@ run_numbat = function(
         out_dir = tempdir(), max_iter = 2, max_nni = 100, t = 1e-5, gamma = 20, min_LLR = 5,
         alpha = 1e-4, eps = 1e-5, max_entropy = 0.5, init_k = 3, min_cells = 50, tau = 0.3, nu = 1,
         max_cost = ncol(count_mat) * tau, n_cut = 0, min_depth = 0, common_diploid = TRUE, min_overlap = 0.45, 
-        ncores = 1, ncores_nni = ncores, random_init = FALSE, segs_loh = NULL,
-        verbose = TRUE, diploid_chroms = NULL, use_loh = NULL, min_genes = 10,
-        skip_nj = FALSE, multi_allelic = TRUE, p_multi = 1-alpha,
+        ncores = 1, ncores_nni = ncores, random_init = FALSE, segs_loh = NULL, call_clonal_loh = FALSE, 
+        verbose = TRUE, diploid_chroms = NULL, segs_consensus_fix = NULL, use_loh = NULL, min_genes = 10,
+        skip_nj = FALSE, multi_allelic = TRUE, p_multi = 1-alpha, 
         plot = TRUE, check_convergence = FALSE, exclude_neu = TRUE
     ) {
+
+    ######### Setup output folder #########
+    dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+    logfile = glue('{out_dir}/log.txt')
+    if (file.exists(logfile)) {file.remove(logfile)}
+    log_appender(appender_file(logfile))
 
     ######### Basic checks #########
     if (genome == 'hg38') {
@@ -108,12 +116,22 @@ run_numbat = function(
         stop('No matching cell names between count_mat and df_allele')
     }
 
-    ######### Log parameters #########
-    dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
-    logfile = glue('{out_dir}/log.txt')
-    if (file.exists(logfile)) {file.remove(logfile)}
-    log_appender(appender_file(logfile))
+    if ((!is.null(segs_loh)) & (!is.null(segs_consensus_fix))) {
+        stop('Cannot specify both segs_loh and segs_consensus_fix')
+    }
 
+    # check provided consensus CNVs
+    segs_consensus_fix = check_segs_fix(segs_consensus_fix)
+
+    # check clonal LOH
+    if (!is.null(segs_loh)) {
+        if (call_clonal_loh) {
+            stop('Cannot specify both segs_loh and call_clonal_loh')
+        }
+        segs_loh = check_segs_loh(segs_loh)
+    }
+
+    ######### Log parameters #########
     log_message(paste(
         glue('Numbat version: ', as.character(utils::packageVersion("numbat"))),
         'Running under parameters:',
@@ -128,12 +146,15 @@ run_numbat = function(
         glue('max_nni = {max_nni}'),
         glue('min_depth = {min_depth}'),
         glue('use_loh = {ifelse(is.null(use_loh), "auto", use_loh)}'),
+        glue('segs_loh = {ifelse(is.null(segs_loh), "None", "Given")}'),
+        glue('call_clonal_loh = {call_clonal_loh}'),
+        glue('segs_consensus_fix = {ifelse(is.null(segs_consensus_fix), "None", "Given")}'),
         glue('multi_allelic = {multi_allelic}'),
         glue('min_LLR = {min_LLR}'),
         glue('min_overlap = {min_overlap}'),
         glue('max_entropy = {max_entropy}'),
         glue('skip_nj = {skip_nj}'),
-        glue('diploid_chroms = {paste0(diploid_chroms, collapse = ",")}'),
+        glue('diploid_chroms = {ifelse(is.null(diploid_chroms), "None", "Given")}'),
         glue('ncores = {ncores}'),
         glue('ncores_nni = {ncores_nni}'),
         glue('common_diploid = {common_diploid}'),
@@ -153,6 +174,28 @@ run_numbat = function(
     data.table::setDTthreads(1)
 
     ######## Initialization ########
+
+    if (call_clonal_loh) {
+        
+        log_message('Calling segments with clonal LOH')
+
+        bulk = get_bulk(
+            count_mat = count_mat,
+            lambdas_ref = lambdas_ref,
+            df_allele = df_allele,
+            gtf = gtf,
+            min_depth = min_depth,
+            nu = nu
+        )
+
+        segs_loh = bulk %>% detect_clonal_loh(t = t, min_depth = min_depth)
+
+        if (!is.null(segs_loh)) {
+            fwrite(segs_loh, glue('{out_dir}/segs_loh.tsv'), sep = '\t')
+        } else {
+            log_message('No segments with clonal LOH detected')
+        }
+    }
 
     sc_refs = choose_ref_cor(count_mat, lambdas_ref, gtf)
     saveRDS(sc_refs, glue('{out_dir}/sc_refs.rds'))
@@ -231,8 +274,6 @@ run_numbat = function(
         log_message(glue('Iteration {i}'), verbose = verbose)
         log_mem()
 
-        ######## Run HMMs ########
-
         subtrees = purrr::keep(subtrees, function(x) x$size > min_cells)
 
         bulk_subtrees = make_group_bulks(
@@ -243,30 +284,8 @@ run_numbat = function(
                 gtf = gtf,
                 min_depth = min_depth,
                 nu = nu,
-                ncores = ncores)
-
-        bulk_subtrees = bulk_subtrees %>%
-            run_group_hmms(
-                t = t,
-                gamma = gamma,
-                alpha = alpha,
-                nu = nu,
-                min_genes = min_genes,
-                common_diploid = common_diploid,
-                diploid_chroms = diploid_chroms,
                 segs_loh = segs_loh,
-                ncores = ncores,
-                verbose = verbose)
-
-        fwrite(bulk_subtrees, glue('{out_dir}/bulk_subtrees_{i}.tsv.gz'), sep = '\t')
-        
-        if (plot) {
-            p = plot_bulks(bulk_subtrees, min_LLR = min_LLR, use_pos = TRUE, genome = genome)
-            ggsave(
-                glue('{out_dir}/bulk_subtrees_{i}.png'), p, 
-                width = 13, height = 2*length(unique(bulk_subtrees$sample)), dpi = 250
-            )
-        }
+                ncores = ncores)
 
         # diagnostics
         if (i == 1) {
@@ -274,42 +293,85 @@ run_numbat = function(
             bulk_subtrees %>% filter(sample == 0) %>% check_exp_noise()
         }
 
-        # find consensus CNVs
-        segs_consensus = bulk_subtrees %>% 
-            get_segs_consensus(min_LLR = min_LLR, min_overlap = min_overlap, retest = TRUE)
+        if (is.null(segs_consensus_fix)) {
 
-        # check termination
-        if (all(segs_consensus$cnv_state_post == 'neu')) {
-            msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
-            log_message(msg)
-            return(msg)
-        }
+            bulk_subtrees = bulk_subtrees %>%
+                run_group_hmms(
+                    t = t,
+                    gamma = gamma,
+                    alpha = alpha,
+                    nu = nu,
+                    min_genes = min_genes,
+                    common_diploid = common_diploid,
+                    diploid_chroms = diploid_chroms,
+                    ncores = ncores,
+                    verbose = verbose)
 
-        # retest all segments on subtrees
-        bulk_subtrees = retest_bulks(
-                bulk_subtrees,
-                segs_consensus, 
-                diploid_chroms = diploid_chroms, 
-                gamma = gamma,
-                min_LLR = min_LLR,
-                ncores = ncores
-            )
+            fwrite(bulk_subtrees, glue('{out_dir}/bulk_subtrees_{i}.tsv.gz'), sep = '\t')
+            
+            if (plot) {
+                p = plot_bulks(bulk_subtrees, min_LLR = min_LLR, use_pos = TRUE, genome = genome)
+                ggsave(
+                    glue('{out_dir}/bulk_subtrees_{i}.png'), p, 
+                    width = 13, height = 2*length(unique(bulk_subtrees$sample)), dpi = 250
+                )
+            }
 
-        fwrite(bulk_subtrees, glue('{out_dir}/bulk_subtrees_retest_{i}.tsv.gz'), sep = '\t')
-        
-        segs_consensus = bulk_subtrees %>%
-            get_segs_consensus(min_LLR = min_LLR, min_overlap = min_overlap, retest = FALSE)
+            # define consensus CNVs
+            segs_consensus = bulk_subtrees %>% 
+                get_segs_consensus(min_LLR = min_LLR, min_overlap = min_overlap, retest = TRUE)
+            
+            # check termination
+            if (all(segs_consensus$cnv_state_post == 'neu')) {
+                msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
+                log_message(msg)
+                return(msg)
+            }
 
-        # check termination again
-        if (all(segs_consensus$cnv_state_post == 'neu')) {
-            msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
-            log_message(msg)
-            return(msg)
+            # retest all segments on subtrees
+            bulk_subtrees = retest_bulks(
+                    bulk_subtrees,
+                    segs_consensus, 
+                    diploid_chroms = diploid_chroms, 
+                    gamma = gamma,
+                    min_LLR = min_LLR,
+                    ncores = ncores
+                )
+
+            fwrite(bulk_subtrees, glue('{out_dir}/bulk_subtrees_retest_{i}.tsv.gz'), sep = '\t')
+            
+            # find consensus CNVs again
+            segs_consensus = bulk_subtrees %>%
+                get_segs_consensus(min_LLR = min_LLR, min_overlap = min_overlap, retest = FALSE)
+
+            # check termination again
+            if (all(segs_consensus$cnv_state_post == 'neu')) {
+                msg = 'No CNV remains after filtering by LLR in pseudobulks. Consider reducing min_LLR.'
+                log_message(msg)
+                return(msg)
+            }
+
+        } else {
+
+            log_message('Using fixed consensus CNVs')
+            segs_consensus = segs_consensus_fix
+
+            bulk_subtrees = bulk_subtrees %>% 
+                annot_consensus(segs_consensus) %>%
+                annot_theta_mle() %>%
+                classify_alleles()
+
         }
 
         # retest on clones
         clones = purrr::keep(clones, function(x) x$size > min_cells)
-        
+
+        if (length(clones) == 0) {
+            msg = 'No clones remain after filtering by size. Consider reducing min_cells.'
+            log_message(msg)
+            return(msg)
+        }
+
         bulk_clones = make_group_bulks(
                 groups = clones,
                 count_mat = count_mat,
@@ -318,6 +380,7 @@ run_numbat = function(
                 gtf = gtf,
                 min_depth = min_depth,
                 nu = nu,
+                segs_loh = segs_loh,
                 ncores = ncores)
 
         bulk_clones = bulk_clones %>% 
@@ -329,7 +392,6 @@ run_numbat = function(
                 min_genes = min_genes,
                 common_diploid = common_diploid,
                 diploid_chroms = diploid_chroms,
-                segs_loh = segs_loh,
                 ncores = ncores,
                 verbose = verbose,
                 retest = FALSE)
@@ -555,6 +617,7 @@ run_numbat = function(
         gtf = gtf,
         min_depth = min_depth,
         nu = nu,
+        segs_loh = segs_loh,
         ncores = ncores)
 
     bulk_clones = bulk_clones %>% 
@@ -566,7 +629,6 @@ run_numbat = function(
             min_genes = min_genes,
             common_diploid = FALSE,
             diploid_chroms = diploid_chroms,
-            segs_loh = segs_loh,
             ncores = ncores,
             verbose = verbose,
             retest = FALSE)
@@ -660,10 +722,11 @@ exp_hclust = function(count_mat, lambdas_ref, gtf, sc_refs = NULL, window = 101,
 #' @param lambdas_ref matrix Reference expression profiles
 #' @param gtf dataframe Transcript GTF
 #' @param min_depth integer Minimum allele depth to include
+#' @param segs_loh dataframe Segments with clonal LOH to be excluded
 #' @param ncores integer Number of cores
 #' @return dataframe Pseudobulk profiles
 #' @keywords internal 
-make_group_bulks = function(groups, count_mat, df_allele, lambdas_ref, gtf, min_depth = 0, nu = 1, ncores = NULL) {
+make_group_bulks = function(groups, count_mat, df_allele, lambdas_ref, gtf, min_depth = 0, nu = 1, segs_loh = NULL, ncores = NULL) {
     
     if (length(groups) == 0) {
         return(data.frame())
@@ -682,7 +745,8 @@ make_group_bulks = function(groups, count_mat, df_allele, lambdas_ref, gtf, min_
                     lambdas_ref = lambdas_ref,
                     gtf = gtf,
                     min_depth = min_depth,
-                    nu = nu
+                    nu = nu,
+                    segs_loh = segs_loh
                 ) %>%
                 mutate(
                     n_cells = g$size,
@@ -724,7 +788,7 @@ make_group_bulks = function(groups, count_mat, df_allele, lambdas_ref, gtf, min_
 run_group_hmms = function(
     bulks, t = 1e-4, gamma = 20, alpha = 1e-4, min_genes = 10, nu = 1,
     common_diploid = TRUE, diploid_chroms = NULL, allele_only = FALSE, retest = TRUE, run_hmm = TRUE,
-    segs_loh = NULL, exclude_neu = TRUE, ncores = 1, verbose = FALSE, debug = FALSE
+    exclude_neu = TRUE, ncores = 1, verbose = FALSE, debug = FALSE
 ) {
 
     # drop samples with no allele data
@@ -744,7 +808,7 @@ run_group_hmms = function(
     if (!run_hmm) {
         find_diploid = FALSE
     } else if (common_diploid & is.null(diploid_chroms)) {
-        bulks = find_common_diploid(bulks, gamma = gamma, alpha = alpha, ncores = ncores, segs_loh = segs_loh)
+        bulks = find_common_diploid(bulks, gamma = gamma, alpha = alpha, ncores = ncores)
         find_diploid = FALSE
     } else {
         find_diploid = TRUE
@@ -765,7 +829,6 @@ run_group_hmms = function(
                 min_genes = min_genes,
                 retest = retest, 
                 verbose = verbose,
-                segs_loh = segs_loh,
                 exclude_neu = exclude_neu
             )
     })
@@ -882,7 +945,7 @@ get_segs_consensus = function(bulks, min_LLR = 5, min_overlap = 0.45, retest = T
             arrange(CHROM) %>%
             group_by(CHROM) %>%
             mutate(
-                seg = paste0(CHROM, letters_all[1:n()]),
+                seg = paste0(CHROM, generate_postfix(1:n())),
                 cnv_state = 'neu', 
                 cnv_state_post = 'neu'
             ) %>% 
@@ -932,7 +995,7 @@ fill_neu_segs = function(segs_consensus, segs_neu) {
         mutate(cnv_state = tidyr::replace_na(cnv_state, 'neu')) %>%
         arrange(CHROM, seg_start) %>%
         group_by(CHROM) %>%
-        mutate(seg_cons = paste0(CHROM, letters_all[1:n()])) %>%
+        mutate(seg_cons = paste0(CHROM, generate_postfix(1:n()))) %>%
         ungroup() %>%
         mutate(CHROM = factor(CHROM, 1:22)) %>%
         arrange(CHROM)
@@ -1546,7 +1609,7 @@ get_joint_post = function(exp_post, allele_post, segs_consensus) {
 #' @keywords internal 
 retest_bulks = function(bulks, segs_consensus = NULL,
     t = 1e-5, min_genes = 10, gamma = 20, nu = 1,
-    segs_loh = NULL, use_loh = FALSE, diploid_chroms = NULL, ncores = 1, exclude_neu = TRUE, min_LLR = 5) {
+    use_loh = FALSE, diploid_chroms = NULL, ncores = 1, exclude_neu = TRUE, min_LLR = 5) {
 
     if (is.null(segs_consensus)) {
         segs_consensus = get_segs_consensus(bulks)

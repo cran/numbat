@@ -1,9 +1,19 @@
+
+#' Log memory usage
+#' @param msg string Message to log
+#' @return NULL
+#' @keywords internal
 log_mem = function() {
     m = pryr::mem_used()
     msg = paste0('Mem used: ', signif(m/1e9, 3), 'Gb')
     log_message(msg)
 }
 
+#' Log a message
+#' @param msg string Message to log
+#' @param verbose boolean Whether to print message to console
+#' @return NULL
+#' @keywords internal
 log_message = function(msg, verbose = TRUE) {
     log_info(msg)
     if (verbose) {
@@ -11,7 +21,9 @@ log_message = function(msg, verbose = TRUE) {
     }
 }
 
-#' check the format of a count matrix
+#' Check the format of a count matrix
+#' @param count_mat matrix Count matrix
+#' @return matrix Count matrix
 #' @keywords internal
 check_matrix = function(count_mat) {
 
@@ -37,7 +49,9 @@ check_matrix = function(count_mat) {
     }
 }
 
-#' check the format of a allele dataframe
+#' Check the format of a allele dataframe
+#' @param df dataframe Allele dataframe
+#' @return dataframe Allele dataframe
 #' @keywords internal
 check_allele_df = function(df) {
 
@@ -116,6 +130,8 @@ annotate_genes = function(df, gtf) {
 }
 
 #' check the format of lambdas_ref
+#' @param lambdas_ref matrix Expression reference profile
+#' @return matrix Expression reference profile
 #' @keywords internal
 check_exp_ref = function(lambdas_ref) {
 
@@ -129,6 +145,7 @@ check_exp_ref = function(lambdas_ref) {
 
 #' check inter-individual contamination
 #' @param bulk dataframe Pseudobulk profile
+#' @return NULL
 #' @keywords internal
 check_contam = function(bulk) {
 
@@ -148,15 +165,16 @@ check_contam = function(bulk) {
 
 #' check noise level
 #' @param bulk dataframe Pseudobulk profile
+#' @return NULL
 #' @keywords internal
 check_exp_noise = function(bulk) {
 
-    sig = unique(na.omit(bulk$sig))
+    mse = unique(na.omit(bulk$mse))
 
-    if (sig > 1) {
+    if (mse > 1.5) {
         noise_level  = 'high'
         noise_msg = 'Consider using a custom expression reference profile.'
-    } else if (sig > 0.5) {
+    } else if (mse > 0.5) {
         noise_level = 'medium'
         noise_msg = ''
     } else {
@@ -165,15 +183,82 @@ check_exp_noise = function(bulk) {
     }
 
     msg = paste0(
-        'Expression noise level: ',
+        'Expression noise level (MSE): ',
         noise_level,
-        ' (', signif(sig, 2), '). ',
+        ' (', signif(mse, 2), '). ',
         noise_msg)
 
     # message(msg)
     log_message(msg)
 }
 
+#' Check the format of a given clonal LOH segment dataframe
+#' @param segs_loh dataframe Clonal LOH segment dataframe
+check_segs_loh = function(segs_loh) {
+    
+        if (is.null(segs_loh)) {
+            return(NULL)
+        }
+    
+        if (!all(c('CHROM', 'seg', 'seg_start', 'seg_end') %in% colnames(segs_loh))) {
+            stop('The clonal LOH segment dataframe appears to be malformed. Please fix.')
+        }
+
+        if (is.integer(segs_loh$seg)) {
+            segs_loh = segs_loh %>% mutate(seg = paste0(CHROM, '_', seg))
+        }
+
+        segs_loh = segs_loh %>% 
+            mutate(loh = TRUE) %>%
+            relevel_chrom() %>%
+            arrange(CHROM, seg_start)
+    
+        return(segs_loh)
+
+}
+
+#' check the format of a given consensus segment dataframe
+#' @param segs_consensus_fix dataframe Consensus segment dataframe
+#' @return dataframe Consensus segment dataframe
+#' @keywords internal
+check_segs_fix = function(segs_consensus_fix) {
+
+    if (is.null(segs_consensus_fix)) {
+        return(NULL)
+    }
+
+    if (!all(c('CHROM', 'seg', 'seg_start', 'seg_end', 'cnv_state') %in% colnames(segs_consensus_fix))) {
+        stop('The consensus segment dataframe appears to be malformed. Please fix.')
+    }
+
+    segs_consensus_fix = segs_consensus_fix %>% 
+        relevel_chrom() %>%
+        arrange(CHROM, seg_start)
+
+    if (is.integer(segs_consensus_fix$seg)) {
+        segs_consensus_fix = segs_consensus_fix %>% mutate(seg = paste0(CHROM, '_', seg))
+    }
+
+    segs_consensus_fix = segs_consensus_fix %>%
+        arrange(CHROM) %>%
+        mutate(
+            cnv_state_post = cnv_state,
+            seg_cons = seg,
+            p_amp = ifelse(cnv_state == 'amp', 1, 0),
+            p_del = ifelse(cnv_state == 'del', 1, 0),
+            p_loh = ifelse(cnv_state == 'loh', 1, 0),
+            p_bamp = ifelse(cnv_state == 'bamp', 1, 0),
+            p_bdel = ifelse(cnv_state == 'bdel', 1, 0),
+            seg_length = seg_end - seg_start,
+            LLR = ifelse(cnv_state == 'neu', NA, Inf)
+        ) %>%
+        as.data.frame()
+
+    return(segs_consensus_fix)
+    
+}
+
+#' Check the format of a given file
 #' @keywords internal
 return_missing_columns = function(file, expected_colnames = NULL) {
     ## if user sets expected_colnames = NULL, return NULL
@@ -195,7 +280,9 @@ return_missing_columns = function(file, expected_colnames = NULL) {
     }
 }
 
-
+#' Relevel chromosome column
+#' @param df dataframe Dataframe with chromosome column
+#' @keywords internal 
 relevel_chrom = function(df) {
     if (!is.null(df)) {
         df = df %>% mutate(CHROM = factor(CHROM, 1:22))
@@ -204,9 +291,9 @@ relevel_chrom = function(df) {
 }
 
 #' @keywords internal
-check_fread_works = function(input) {
+check_fread_works = function(input, ...) {
     tryCatch({
-        return(data.table::fread(input))
+        return(data.table::fread(input, ...))
     },
     error = function(e){
         message(paste0("Could not read the input file ", input, " with data.table::fread(). Please check that the file is valid."))
@@ -227,11 +314,11 @@ check_rds_works = function(input) {
 
 
 #' @keywords internal
-read_file = function(inputfile, expected_colnames = NULL, filetype="tsv") {
+read_file = function(inputfile, expected_colnames = NULL, filetype="tsv", ...) {
     if (filetype == "tsv") {
-        file = check_fread_works(inputfile)
+        file = check_fread_works(inputfile, ...)
     } else if (filetype == "rds") {
-        file = check_rds_works(inputfile)       
+        file = check_rds_works(inputfile)      
     } else {
         stop("The parameter 'filetype' must be either 'tsv' or 'rds'. Please fix.")
     }

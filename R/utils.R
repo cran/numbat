@@ -307,6 +307,9 @@ combine_bulk = function(allele_bulk, exp_bulk) {
 }
 
 #' Get average reference expressio profile based on single-cell ref choices
+#' @param lambdas_ref matrix Reference expression profiles
+#' @param sc_refs vector Single-cell reference choices
+#' @param verbose logical Print messages
 #' @keywords internal
 get_lambdas_bar = function(lambdas_ref, sc_refs, verbose = TRUE) {
 
@@ -331,6 +334,7 @@ get_lambdas_bar = function(lambdas_ref, sc_refs, verbose = TRUE) {
 #' @param subset vector Subset of cells to aggregate
 #' @param min_depth integer Minimum coverage to filter SNPs
 #' @param nu numeric Phase switch rate
+#' @param segs_loh dataframe Segments with clonal LOH to be excluded
 #' @param verbose logical Verbosity
 #' @return dataframe Pseudobulk gene expression and allele profile
 #' @examples
@@ -340,7 +344,7 @@ get_lambdas_bar = function(lambdas_ref, sc_refs, verbose = TRUE) {
 #'     df_allele = df_allele_example,
 #'     gtf = gtf_hg38)
 #' @export
-get_bulk = function(count_mat, lambdas_ref, df_allele, gtf, subset = NULL, min_depth = 0, nu = 1, verbose = TRUE) {
+get_bulk = function(count_mat, lambdas_ref, df_allele, gtf, subset = NULL, min_depth = 0, nu = 1, segs_loh = NULL, verbose = TRUE) {
 
     count_mat = check_matrix(count_mat)
 
@@ -362,7 +366,7 @@ get_bulk = function(count_mat, lambdas_ref, df_allele, gtf, subset = NULL, min_d
             verbose = verbose
         ) %>%
         filter((logFC < 5 & logFC > -5) | Y_obs == 0) %>%
-        mutate(sse = fit$sse)
+        mutate(mse = fit$mse)
 
     allele_bulk = get_allele_bulk(
         df_allele,
@@ -385,6 +389,15 @@ get_bulk = function(count_mat, lambdas_ref, df_allele, gtf, subset = NULL, min_d
         mutate(CHROM = as.character(CHROM)) %>%
         mutate(CHROM = ifelse(CHROM == 'X', 23, CHROM)) %>%
         mutate(CHROM = factor(as.integer(CHROM)))
+
+    # annotate clonal LOH regions
+    if (is.null(segs_loh)) {
+        bulk = bulk %>% mutate(loh = FALSE)
+    } else {
+        bulk = bulk %>% 
+            annot_consensus(segs_loh, join_mode = 'left') %>%
+            mutate(loh = ifelse(is.na(loh), FALSE, TRUE))
+    }
 }
 
 #' Fit a reference profile from multiple references using constrained least square
@@ -438,7 +451,7 @@ fit_ref_sse = function(Y_obs, lambdas_ref, gtf, min_lambda = 2e-6, verbose = FAL
 
     lambdas_bar = lambdas_ref %*% w %>% {setNames(as.vector(.), rownames(.))}
 
-    return(list('w' = w, 'lambdas_bar' = lambdas_bar, 'sse' = fit$value/length(Y_obs)))
+    return(list('w' = w, 'lambdas_bar' = lambdas_bar, 'mse' = fit$value/length(Y_obs)))
 }
 
 #' predict phase switch probablity as a function of genetic distance
@@ -477,7 +490,6 @@ switch_prob_cm = function(d, nu = 1, min_p = 1e-10) {
 #' @param retest logical Whether to retest CNVs after Viterbi decoding
 #' @param find_diploid logical Whether to run diploid region identification routine
 #' @param diploid_chroms character vector User-given chromosomes that are known to be in diploid state
-#' @param segs_loh dataframe Segments with clonal LOH to be excluded
 #' @param classify_allele logical Whether to only classify allele (internal use only)
 #' @param run_hmm logical Whether to run HMM (internal use only)
 #' @param prior numeric vector Prior probabilities of states (internal use only)
@@ -492,7 +504,7 @@ analyze_bulk = function(
     bulk, t = 1e-5, gamma = 20, theta_min = 0.08, logphi_min = 0.25,
     nu = 1, min_genes = 10,
     exp_only = FALSE, allele_only = FALSE, bal_cnv = TRUE, retest = TRUE, 
-    find_diploid = TRUE, diploid_chroms = NULL, segs_loh = NULL,
+    find_diploid = TRUE, diploid_chroms = NULL, 
     classify_allele = FALSE, run_hmm = TRUE, prior = NULL, exclude_neu = TRUE,
     phasing = TRUE, verbose = TRUE
 ) {
@@ -518,13 +530,9 @@ analyze_bulk = function(
     } else if (find_diploid) {
         bulk = find_common_diploid(
             bulk, gamma = gamma, t = t, theta_min = theta_min, 
-            min_genes = min_genes, fc_min = 2^logphi_min, segs_loh = segs_loh)
+            min_genes = min_genes, fc_min = 2^logphi_min)
     } else if (!'diploid' %in% colnames(bulk)) {
         stop('Must define diploid region if not given')
-    }
-
-    if (is.null(segs_loh)) {
-        bulk = bulk %>% mutate(loh = FALSE)
     }
 
     if (!allele_only) {
@@ -895,10 +903,23 @@ phi_hat_roll = function(Y_obs, lambda_ref, d_obs, mu, sig, h) {
     )
 }
 
+#' Generate alphabetical postfixes
+#' @param n vector of integers
+#' @return vector of alphabetical postfixes
 #' @keywords internal
-letters_all = c(letters, paste0(letters, letters), paste0(letters, letters, letters))
-
-
+generate_postfix <- function(n) {
+  alphabet <- letters
+  postfixes <- sapply(n, function(i) {
+    postfix <- character(0)
+    while (i > 0) {
+      remainder <- (i - 1) %% 26
+      i <- (i - 1) %/% 26
+      postfix <- c(alphabet[remainder + 1], postfix)
+    }
+    paste(postfix, collapse = "")
+  })
+  return(postfixes)
+}
 
 #' Annotate copy number segments after HMM decoding 
 #' @param bulk dataframe Pseudobulk profile
@@ -911,7 +932,7 @@ annot_segs = function(bulk, var = 'cnv_state') {
             arrange(CHROM, snp_index) %>%
             mutate(boundary = c(0, get(var)[2:length(get(var))] != get(var)[1:(length(get(var))-1)])) %>%
             group_by(CHROM) %>%
-            mutate(seg = paste0(CHROM, letters_all[cumsum(boundary)+1])) %>%
+            mutate(seg = paste0(CHROM, generate_postfix(cumsum(boundary)+1))) %>%
             arrange(CHROM) %>%
             mutate(seg = factor(seg, unique(seg))) %>%
             ungroup() %>%
@@ -1025,6 +1046,25 @@ annot_consensus = function(bulk, segs_consensus, join_mode = 'inner') {
     return(bulk)
 }
 
+#' Annotate the theta parameter for each segment
+#' @param bulk dataframe Pseudobulk profile
+#' @return dataframe Pseudobulk profile
+#' @keywords internal
+annot_theta_mle = function(bulk) {
+    
+    theta_est = bulk %>% 
+        group_by(CHROM, seg) %>%
+        filter(cnv_state != 'neu') %>%
+        summarise(
+            approx_theta_post(pAD[!is.na(pAD)], DP[!is.na(pAD)], p_s[!is.na(pAD)], gamma = 30, start = 0.1),
+            .groups = 'drop'
+        )
+    
+    bulk = bulk %>% left_join(theta_est, by = c('CHROM', 'seg'))
+    
+    return(bulk)
+}
+
 #' Find the common diploid region in a group of pseudobulks
 #' @param bulks dataframe Pseudobulk profiles (differentiated by "sample" column)
 #' @param grouping logical Whether to use cliques or components in the graph to find dipoid cluster
@@ -1038,7 +1078,7 @@ annot_consensus = function(bulk, segs_consensus, join_mode = 'inner') {
 #' @keywords internal
 find_common_diploid = function(
     bulks, grouping = 'clique', gamma = 20, theta_min = 0.08, t = 1e-5, fc_min = 2^0.25, alpha = 1e-4, min_genes = 10, 
-    ncores = 1, segs_loh = NULL, debug = FALSE, verbose = TRUE) {
+    ncores = 1, debug = FALSE, verbose = TRUE) {
 
     if (!'sample' %in% colnames(bulks)) {
         bulks$sample = '1'
@@ -1063,22 +1103,22 @@ find_common_diploid = function(
                     )
                 ) %>% ungroup() %>%
                 mutate(cnv_state = str_remove(state, '_down|_up')) %>%
-                annot_segs() %>%
+                annot_segs(var = 'cnv_state') %>%
                 smooth_segs(min_genes = min_genes) %>%
-                annot_segs()
+                annot_segs(var = 'cnv_state')
 
         }) %>%
         bind_rows()
 
-    # annotate clonal LOH regions
-    if (!is.null(segs_loh)) {
-        bulks = bulks %>% 
-            annot_consensus(segs_loh, join_mode = 'left') %>%
-            mutate(loh = ifelse(is.na(loh), FALSE, TRUE)) %>%
-            mutate(cnv_state = ifelse(loh, 'loh', cnv_state)) %>%
-            annot_segs(var = 'cnv_state')
-    } else {
-        bulks = bulks %>% mutate(loh = FALSE)
+    # always exclude clonal LOH regions if any
+    if (any(bulks$loh)) {
+        bulks = bulks %>% mutate(cnv_state = ifelse(loh, 'loh', cnv_state)) %>%
+            split(.$sample) %>%
+            lapply(
+                function(bulk) {bulk %>% annot_segs(var = 'cnv_state')}
+            ) %>%
+            bind_rows() %>%
+            ungroup()
     }
 
     # unionize imbalanced segs
@@ -1324,6 +1364,7 @@ fit_gamma = function(AD, DP, start = 20) {
     return(gamma)
 }
 
+#' Density function for a gamma-poisson distribution
 #' @keywords internal
 dgpois <- function(x, shape, rate, scale = 1/rate, log = FALSE) {
   cpp_dgpois(x, shape, scale, log[1L])
@@ -1423,6 +1464,13 @@ calc_phi_mle_lnpois = function (Y_obs, lambda_ref, d, mu, sig, lower = 0.1, uppe
 }
 
 #' Laplace approximation of the posterior of allelic imbalance theta
+#' @param pAD numeric vector Variant allele depth
+#' @param DP numeric vector Total allele depth
+#' @param p_s numeric vector Variant allele frequency
+#' @param lower numeric Lower bound of theta
+#' @param upper numeric Upper bound of theta
+#' @param start numeric Starting value of theta
+#' @param gamma numeric Gamma parameter of the beta-binomial distribution
 #' @keywords internal
 approx_theta_post = function(pAD, DP, p_s, lower = 0.001, upper = 0.499, start = 0.25, gamma = 20) {
 
@@ -1470,6 +1518,17 @@ theta_mle_naive = function(MAD, DP, lower = 0.0001, upper = 0.4999, start = 0.25
 }
 
 #' Laplace approximation of the posterior of expression fold change phi
+#' @param Y_obs numeric vector Gene expression counts
+#' @param lambda_ref numeric vector Reference expression levels
+#' @param d numeric Total library size
+#' @param alpha numeric Shape parameter of the gamma distribution
+#' @param beta numeric Rate parameter of the gamma distribution
+#' @param mu numeric Mean of the normal distribution
+#' @param sig numeric Standard deviation of the normal distribution
+#' @param lower numeric Lower bound of phi
+#' @param upper numeric Upper bound of phi
+#' @param start numeric Starting value of phi
+#' @return numeric MLE of phi and its standard deviation
 #' @keywords internal
 approx_phi_post = function(Y_obs, lambda_ref, d, alpha = NULL, beta = NULL, mu = NULL, sig = NULL, lower = 0.2, upper = 10, start = 1) {
     
@@ -1504,6 +1563,9 @@ approx_phi_post = function(Y_obs, lambda_ref, d, alpha = NULL, beta = NULL, mu =
 }
 
 #' Helper function to get the internal nodes of a dendrogram and the leafs in each subtree 
+#' @param den dendrogram
+#' @param node character Node name
+#' @param labels character vector Leaf labels
 #' @keywords internal
 get_internal_nodes = function(den, node, labels) {
 
@@ -1648,12 +1710,13 @@ calc_exp_LLR = function(Y_obs, lambda_ref, d, phi_mle, mu = NULL, sig = NULL, al
 #' Rcommended for cell lines or tumor samples with no normal cells.
 #' @param bulk dataframe Pseudobulk profile
 #' @param t numeric Transition probability
+#' @param snp_rate_loh numeric The assumed SNP density in clonal LOH regions
 #' @param min_depth integer Minimum coverage to filter SNPs
 #' @return dataframe LOH segments
 #' @examples
 #' segs_loh = detect_clonal_loh(bulk_example)
 #' @export
-detect_clonal_loh = function(bulk, t = 1e-5, min_depth = 0) {
+detect_clonal_loh = function(bulk, t = 1e-5, snp_rate_loh = 5, min_depth = 0) {
 
     bulk_snps = bulk %>% 
         filter(!is.na(gene)) %>%
@@ -1676,7 +1739,7 @@ detect_clonal_loh = function(bulk, t = 1e-5, min_depth = 0) {
     sig = fit@coef[2]
 
     snp_fit = fit_snp_rate(bulk_snps$gene_snps, bulk_snps$gene_length)
-    snp_ref = snp_fit[1]
+    snp_rate_ref = snp_fit[1]
     snp_sig = snp_fit[2]
 
     n = nrow(bulk_snps)
@@ -1687,7 +1750,7 @@ detect_clonal_loh = function(bulk, t = 1e-5, min_depth = 0) {
         x = bulk_snps$gene_snps, 
         Pi = As, 
         delta = c(1-t,t), 
-        pm = c(snp_ref, 5),
+        pm = c(snp_rate_ref, snp_rate_loh),
         pn = bulk_snps$gene_length/1e6,
         snp_sig = snp_sig,
         y = bulk_snps$Y_obs,
@@ -1926,7 +1989,8 @@ snp_rate_roll = function(gene_snps, gene_length, h) {
     )
 }
 
-# negative binomial model
+#' negative binomial model
+#' @keywords internal
 fit_snp_rate = function(gene_snps, gene_length) {
     
     n = length(gene_snps)
