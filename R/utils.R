@@ -580,7 +580,7 @@ analyze_bulk = function(
                     phasing = phasing
                 )
             ) %>% 
-            mutate(state = ifelse(loh, 'del_2_up', state)) %>%
+            mutate(state = ifelse(loh, 'del_up', state)) %>%
             mutate(cnv_state = str_remove(state, '_down|_up')) %>%
             annot_segs(var = 'cnv_state') %>%
             smooth_segs(min_genes = min_genes) %>%
@@ -599,6 +599,7 @@ analyze_bulk = function(
             logphi_min = logphi_min, exclude_neu = exclude_neu,
             allele_only = allele_only)
         
+        # annotate posterior CNV state
         bulk = bulk %>% 
             select(-any_of(colnames(segs_post)[!colnames(segs_post) %in% c('seg', 'CHROM', 'seg_start', 'seg_end')])) %>%
             left_join(
@@ -607,8 +608,23 @@ analyze_bulk = function(
             mutate(
                 cnv_state_post = ifelse(is.na(cnv_state_post), 'neu', cnv_state_post),
                 cnv_state = ifelse(is.na(cnv_state), 'neu', cnv_state)
-            ) %>%
-            mutate(state_post = ifelse(
+            )
+
+        # Force segments with clonal LOH to be deletion
+        bulk = bulk %>% 
+            mutate(
+                cnv_state_post = ifelse(loh, 'del', cnv_state_post),
+                cnv_state = ifelse(loh, 'del', cnv_state),
+                p_del = ifelse(loh, 1, p_del),
+                p_amp = ifelse(loh, 0, p_amp),
+                p_neu = ifelse(loh, 0, p_neu),
+                p_loh = ifelse(loh, 0, p_loh),
+                p_bdel = ifelse(loh, 0, p_bdel),
+                p_bamp = ifelse(loh, 0, p_bamp)
+            )
+        
+        # propagate posterior CNV state to allele states
+        bulk = bulk %>% mutate(state_post = ifelse(
                 cnv_state_post %in% c('amp', 'del', 'loh') & (!cnv_state %in% c('bamp', 'bdel')),
                 paste0(cnv_state_post, '_', str_extract(state, 'up_1|down_1|up_2|down_2|up|down|1_up|2_up|1_down|2_down')),
                 cnv_state_post
@@ -908,17 +924,24 @@ phi_hat_roll = function(Y_obs, lambda_ref, d_obs, mu, sig, h) {
 #' @return vector of alphabetical postfixes
 #' @keywords internal
 generate_postfix <- function(n) {
-  alphabet <- letters
-  postfixes <- sapply(n, function(i) {
-    postfix <- character(0)
-    while (i > 0) {
-      remainder <- (i - 1) %% 26
-      i <- (i - 1) %/% 26
-      postfix <- c(alphabet[remainder + 1], postfix)
+
+    if (any(is.na(n))) {
+        stop("Segment number cannot contain NA")
     }
-    paste(postfix, collapse = "")
-  })
-  return(postfixes)
+
+    alphabet <- letters
+
+    postfixes <- sapply(n, function(i) {
+        postfix <- character(0)
+        while (i > 0) {
+            remainder <- (i - 1) %% 26
+            i <- (i - 1) %/% 26
+            postfix <- c(alphabet[remainder + 1], postfix)
+        }
+        paste(postfix, collapse = "")
+    })
+
+    return(postfixes)
 }
 
 #' Annotate copy number segments after HMM decoding 
@@ -981,7 +1004,8 @@ annot_haplo_segs = function(bulk) {
 #' @return dataframe Pseudobulk profile
 #' @keywords internal
 smooth_segs = function(bulk, min_genes = 10) {
-    bulk %>% group_by(seg) %>%
+
+    bulk = bulk %>% group_by(seg) %>%
         mutate(
             cnv_state = ifelse(n_genes <= min_genes, NA, cnv_state)
         ) %>%
@@ -990,6 +1014,17 @@ smooth_segs = function(bulk, min_genes = 10) {
         mutate(cnv_state = zoo::na.locf(cnv_state, fromLast = FALSE, na.rm=FALSE)) %>%
         mutate(cnv_state = zoo::na.locf(cnv_state, fromLast = TRUE, na.rm=FALSE)) %>%
         ungroup()
+
+    chrom_na = bulk %>% group_by(CHROM) %>% summarise(all_na = all(is.na(cnv_state)))
+
+    if (any(chrom_na$all_na)) {
+        chroms_na = paste0(chrom_na$CHROM[chrom_na$all_na], collapse = ',')
+        msg = glue("No segments containing more than {min_genes} genes for CHROM {chroms_na}.")
+        log_error(msg)
+        stop(msg)
+    }
+
+    return(bulk)
 }
 
 #' Annotate a consensus segments on a pseudobulk dataframe
@@ -1085,7 +1120,7 @@ find_common_diploid = function(
     }
 
     # define balanced regions in each sample
-    bulks = mclapply(
+    results = mclapply(
         bulks %>% split(.$sample),
         mc.cores = ncores,
         function(bulk) {
@@ -1107,8 +1142,16 @@ find_common_diploid = function(
                 smooth_segs(min_genes = min_genes) %>%
                 annot_segs(var = 'cnv_state')
 
-        }) %>%
-        bind_rows()
+        })
+                    
+    bad = sapply(results, inherits, what = "try-error")
+
+    if (any(bad)) {
+        log_error(results[bad][[1]])
+        stop(results[bad][[1]])
+    } else {
+        bulks = results %>% bind_rows()
+    }
 
     # always exclude clonal LOH regions if any
     if (any(bulks$loh)) {
@@ -1193,7 +1236,7 @@ find_common_diploid = function(
             bind_rows() %>%
             rowwise() %>%
             mutate(
-                p = t.test.pval(
+                p = t_test_pval(
                     x = bulks_bal$lnFC[bulks_bal$seg == i & bulks_bal$sample == s],
                     y = bulks_bal$lnFC[bulks_bal$seg == j & bulks_bal$sample == s]
                 ),
@@ -1810,7 +1853,7 @@ simes_p = function(p.vals, n_dim) {
 
 #' T-test wrapper, handles error for insufficient observations
 #' @keywords internal
-t.test.pval = function(x, y) {
+t_test_pval = function(x, y) {
     if (length(x) <= 1 | length(y) <= 1) {
         return(1)
     } else {

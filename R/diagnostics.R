@@ -27,26 +27,31 @@ log_message = function(msg, verbose = TRUE) {
 #' @keywords internal
 check_matrix = function(count_mat) {
 
-    if ('dgCMatrix' %in% class(count_mat)) {
-        return(count_mat)
-    } else if ('matrix' %in% class(count_mat)) {
+    # Make sure that the count matrix is of class dgCMatrix
+    if ('matrix' %in% class(count_mat)) {
         count_mat <- as(Matrix(count_mat, sparse=TRUE), "dgCMatrix")
-        return(count_mat)
-    } else {
-
-        if (!('dgCMatrix' %in% class(count_mat))) {
-            msg = "count_mat is not of class dgCMatrix or matrix"
-        } else if (!is.numeric(count_mat@x)) {
-            msg = "The parameter 'count_mat' must be of type 'integer'. Please fix."
-        } else if (all(count_mat@x != as.integer(count_mat@x))) {
-            msg = "The parameter 'count_mat' must be of type 'integer'. Please fix."
-        } else if (any(duplicated(rownames(count_mat)))) {
-            msg = "Please remove duplicated genes in count matrix"
-        }
-
+    } else if (!('dgCMatrix' %in% class(count_mat))) {
+        msg = "count_mat should be of class dgCMatrix or matrix"
         log_error(msg)
         stop(msg)
     }
+
+    # Make sure that the count matrix is of type integer
+    if (!is.numeric(count_mat@x)) {
+        msg = "The parameter 'count_mat' should be of type 'integer'. Please fix."
+        log_error(msg)
+        stop(msg)
+    } else if (all(count_mat@x != as.integer(count_mat@x))) {
+        msg = "The parameter 'count_mat' should be of type 'integer'. Please fix."
+        log_error(msg)
+        stop(msg)
+    } else if (any(duplicated(rownames(count_mat)))) {
+        msg = "Please remove duplicated genes in count matrix"
+        log_error(msg)
+        stop(msg)
+    }
+
+    return(count_mat)
 }
 
 #' Check the format of a allele dataframe
@@ -75,8 +80,15 @@ check_allele_df = function(df) {
         log_error(msg)
         stop(msg)
     }
+    
+    # check chrom prefix 
+    if (any(str_detect(df$CHROM[1], '^chr'))) {
+        df = df %>% mutate(CHROM = str_remove(CHROM, 'chr'))
+    } 
 
-    df = df %>% mutate(CHROM = factor(CHROM, 1:22))
+    df = df %>% 
+        filter(CHROM %in% 1:22) %>%
+        mutate(CHROM = factor(CHROM, 1:22))
 
     return(df)
 
@@ -138,10 +150,24 @@ check_exp_ref = function(lambdas_ref) {
     if (!is.matrix(lambdas_ref)) {
         lambdas_ref = as.matrix(lambdas_ref) %>% magrittr::set_colnames('ref')
     }
+    
+    # check if all entries in the reference profile are integers
+    if (all(lambdas_ref == as.integer(lambdas_ref))) {
+        msg = "The reference expression matrix 'lambdas_ref' should be normalized gene expression magnitudes. Please use aggregate_counts() function to prepare the reference profile from raw counts."
+        log_error(msg)
+        stop(msg)
+    } else if (any(duplicated(rownames(lambdas_ref)))) {
+        msg = "Please remove duplicated genes in reference profile"
+        log_error(msg)
+        stop(msg)
+    }
+
 
     return(lambdas_ref)
 
 }
+
+
 
 #' check inter-individual contamination
 #' @param bulk dataframe Pseudobulk profile
@@ -194,6 +220,8 @@ check_exp_noise = function(bulk) {
 
 #' Check the format of a given clonal LOH segment dataframe
 #' @param segs_loh dataframe Clonal LOH segment dataframe
+#' @return dataframe Clonal LOH segment dataframe
+#' @keywords internal
 check_segs_loh = function(segs_loh) {
     
         if (is.null(segs_loh)) {

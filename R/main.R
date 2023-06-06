@@ -836,9 +836,8 @@ run_group_hmms = function(
     bad = sapply(results, inherits, what = "try-error")
 
     if (any(bad)) {
-        log_error(glue('job {paste(which(bad), collapse = ",")} failed'))
         log_error(results[bad][[1]])
-        message(results[bad][[1]])
+        stop(results[bad][[1]])
     }
 
     bulks = results %>% bind_rows() %>%
@@ -874,6 +873,7 @@ get_segs_consensus = function(bulks, min_LLR = 5, min_overlap = 0.45, retest = T
     segs_all = bulks %>% 
         group_by(sample, seg, CHROM) %>%
         mutate(seg_start = min(POS), seg_end = max(POS)) %>%
+        filter(seg_start != seg_end) %>%
         ungroup() %>%
         select(any_of(info_cols)) %>%
         distinct() %>%
