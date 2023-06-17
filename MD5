@@ -1,4 +1,4 @@
-f19527b151551b14503e18f1c5726c0d *DESCRIPTION
+0a857d214069da7cc1fc61d69f11a29f *DESCRIPTION
 e53055fb04387935dc54d88754ded6da *LICENSE
 9f925e827fbf3e37bf8e59124932ac34 *NAMESPACE
 18dbd0b648bbdcd5152fecbfa02165ae *NEWS.md
@@ -8,7 +8,7 @@ eecb2d57439ae3567c7f58f89b9ca6f8 *R/data.R
 1ed63bad01589df46fe27e6b46504295 *R/diagnostics.R
 94e0b43b8bca25a7991c8a36296b4999 *R/genotyping.R
 825db0ce2753124dd2c99029ba954d38 *R/hmm.R
-91ec99931629d6a2c83177daa284cff0 *R/main.R
+93df4569b91cfc41dfb513e802a77667 *R/main.R
 069f72267692610220ab1bd96dae1ae0 *R/trees.R
 7cfb5f758ebeba7c002a3044cc0fd734 *R/utils.R
 5196257e5af1da8431ed39ac5f8978e8 *R/vis.R
@@ -182,8 +182,8 @@ ad7d9266f3710a7f0472ac0c3c390174 *man/upgma.Rd
 6c82264db0fbb3c691e8cc75d4d256ed *man/viterbi_allele.Rd
 d36a9a6ff43cc9736bdbe98b2c4fa4e6 *man/viterbi_joint.Rd
 64722447ea80971354ef9e9ec0e1a87e *man/viterbi_loh.Rd
-e90c1b32e302845a3a47eaa95b39c9d1 *src/Makevars
-8dc931b61237b026d4167c6750ef1165 *src/Makevars.win
+d84ce45f027263dc4159f550cd5fb5b6 *src/Makevars
+a23ffe8c6afc95b0dacc3f89b42eef4b *src/Makevars.win
 ebecec29a657fea22411a2f84b7bfa3f *src/RcppExports.cpp
 55acc414721e74c9b7b0fc4cdbad452f *src/bbinom.cpp
 c10d24313504ab951b01089f5689f7f1 *src/hmm.cpp
