@@ -956,7 +956,7 @@ plot_exp_roll = function(gexp_roll_wide, hc, k, gtf, lim = 0.8, n_sample = 300, 
 
     p_tree = ggtree::ggtree(hc, size = 0.2)
 
-    cell_order = p_tree$data %>% filter(isTip) %>% arrange(y) %>% pull(label)
+    cell_order = as.data.frame(p_tree$data) %>% filter(isTip) %>% arrange(y) %>% pull(label)
 
     chrom_labeller <- function(chr){
         chr[chr %in% c(18, 21)] = ''
@@ -1040,7 +1040,6 @@ plot_sc_tree = function(gtree, label_mut = TRUE, label_size = 3, dot_size = 2, b
         ) %>%
         ggtree::ggtree(ladderize = TRUE, size = branch_width) %<+%
         mut_nodes +
-        ggtree::layout_dendrogram() +
         ggtree::geom_rootedge(size = branch_width) +
         theme(
             plot.margin = margin(0,0,0,0),
@@ -1051,8 +1050,10 @@ plot_sc_tree = function(gtree, label_mut = TRUE, label_size = 3, dot_size = 2, b
             axis.ticks.y = element_line(size = 0.2),
             axis.text.y = element_text(size = 8)
         ) +
+        coord_flip() + 
+        scale_x_reverse() +
         guides(color = 'none') +
-        xlab('Number of mutations')
+        xlab('Number of CNVs')
 
     if (label_mut) {
         p_tree = p_tree +
