@@ -162,7 +162,8 @@ plot_psbulk = function(
     p = p + geom_point(
             aes(shape = str_detect(state_post, '_2'), alpha = str_detect(state_post, '_2')),
             size = dot_size,
-            na.rm = TRUE
+            na.rm = TRUE,
+            show.legend = TRUE
         ) +
         geom_hline(
             data = data.frame(y = c(0,1), variable = 'pHF'),
@@ -505,7 +506,7 @@ plot_phylo_heatmap = function(
     # if no multi allelic CNVs
     if (!'n_states' %in% colnames(joint_post)) {
         joint_post = joint_post %>% mutate(
-            n_states = ifelse(cnv_state == 'neu', 1, 0),
+            n_states = ifelse(cnv_state == 'neu', 0, 1),
             cnv_states = cnv_state
         )
     } else {
