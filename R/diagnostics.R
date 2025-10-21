@@ -92,6 +92,64 @@ check_allele_df = function(df) {
     return(df)
 
 }
+#' Check and format the GTF input
+#'
+#' This function validates the input GTF object, ensuring it is either a properly
+#' structured `GRanges` or `data.frame` that matches the expected Numbat GTF format.
+#' If a `GRanges` is provided, it will be processed into a standard GTF-like
+#' `data.frame` with gene coordinates and annotations.
+#'
+#' @param gtf_obj GRanges or data.frame; input GTF object
+#' @param reference_gtf_cols character vector; expected column names (default from numbat::gtf_hg38)
+#'
+#' @return data.frame Formatted GTF object with required structure
+#' @keywords internal
+check_gtf_input <- function(gtf_obj, reference_gtf_cols = colnames(gtf_hg38)) {
+
+    if (inherits(gtf_obj, "GRanges")) {
+
+        gtf_obj$gene <- paste0(seqnames(gtf_obj), ":", start(gtf_obj), "-", end(gtf_obj))
+        gtf_obj$gene_length <- width(gtf_obj)
+        gtf_obj$gene_start <- start(gtf_obj)
+        gtf_obj$gene_end <- end(gtf_obj)
+        gtf_obj$CHROM <- gsub("^chr", "", as.character(seqnames(gtf_obj)))
+
+        gtf_df <- as.data.frame(gtf_obj) %>%
+            dplyr::filter(CHROM != "X") %>%
+            dplyr::select(-any_of(c('strand'))) %>%
+            dplyr::mutate(
+                gene_start = as.integer(gene_start),
+                gene_end = as.integer(gene_end),
+                gene_length = as.integer(gene_length)
+            )
+
+        rownames(gtf_df) <- gtf_df$gene
+
+        if (!identical(colnames(gtf_df), reference_gtf_cols)) {
+            msg <- "The GRanges-derived GTF does not match the expected column structure."
+            log_error(msg)
+            stop(msg)
+        }
+
+        return(gtf_df[, reference_gtf_cols])
+
+    } else {
+
+        if (!is.data.frame(gtf_obj)) {
+            msg <- "GTF must be a GRanges object or a data.frame with proper GTF structure."
+            log_error(msg)
+            stop(msg)
+        }
+
+        if (!identical(sort(colnames(gtf_obj)), sort(reference_gtf_cols))) {
+            msg <- "Supplied GTF data.frame column names do not match the expected Numbat GTF."
+            log_error(msg)
+            stop(msg)
+        }
+
+    return(gtf_obj)
+    }
+}
 
 #' Annotate genes on allele dataframe
 #' @param df dataframe Allele count dataframe 
@@ -261,8 +319,22 @@ check_segs_fix = function(segs_consensus_fix) {
     }
 
     if (!all(c('CHROM', 'seg', 'seg_start', 'seg_end', 'cnv_state') %in% colnames(segs_consensus_fix))) {
-        stop('The consensus segment dataframe appears to be malformed. Please fix.')
+        stop('The consensus segment dataframe appears to be malformed; expected column names: CHROM, seg, seg_start, seg_end, cnv_state.')
     }
+
+    # Check that provided cnv states are formatted properly (e.g. 'del' rather than 'deletion')
+    valid_states <- c("neu", "amp", "del", "loh", "bamp", "bdel")
+    if (!all(segs_consensus_fix$cnv_state %in% valid_states)) {
+        bad_vals <- unique(segs_consensus_fix$cnv_state[!segs_consensus_fix$cnv_state %in% valid_states])
+        stop(paste0(
+            "Invalid cnv_state values: ", paste(bad_vals, collapse = ", "),
+            "\n  Allowed values are: ", paste(valid_states, collapse = ", ")
+        ))
+    }
+
+    segs_consensus_fix = segs_consensus_fix %>% select(any_of(
+        c('CHROM', 'seg', 'seg_start', 'seg_end', 'cnv_state', 'p_amp', 'p_del', 'p_loh', 'p_bamp', 'p_bdel')
+    ))
 
     segs_consensus_fix = segs_consensus_fix %>% 
         relevel_chrom() %>%
@@ -272,16 +344,22 @@ check_segs_fix = function(segs_consensus_fix) {
         segs_consensus_fix = segs_consensus_fix %>% mutate(seg = paste0(CHROM, '_', seg))
     }
 
+    if (!all(c('p_amp', 'p_del', 'p_loh', 'p_bamp', 'p_bdel') %in% colnames(segs_consensus_fix))) {
+        segs_consensus_fix = segs_consensus_fix %>% 
+            mutate(
+                p_amp = ifelse(cnv_state == 'amp', 1, 0),
+                p_del = ifelse(cnv_state == 'del', 1, 0),
+                p_loh = ifelse(cnv_state == 'loh', 1, 0),
+                p_bamp = ifelse(cnv_state == 'bamp', 1, 0),
+                p_bdel = ifelse(cnv_state == 'bdel', 1, 0)
+            )
+    }
+
     segs_consensus_fix = segs_consensus_fix %>%
         arrange(CHROM) %>%
         mutate(
             cnv_state_post = cnv_state,
             seg_cons = seg,
-            p_amp = ifelse(cnv_state == 'amp', 1, 0),
-            p_del = ifelse(cnv_state == 'del', 1, 0),
-            p_loh = ifelse(cnv_state == 'loh', 1, 0),
-            p_bamp = ifelse(cnv_state == 'bamp', 1, 0),
-            p_bdel = ifelse(cnv_state == 'bdel', 1, 0),
             seg_length = seg_end - seg_start,
             LLR = ifelse(cnv_state == 'neu', NA, Inf)
         ) %>%

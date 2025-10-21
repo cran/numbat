@@ -26,7 +26,8 @@ NULL
 #' @param count_mat dgCMatrix Raw count matrices where rownames are genes and column names are cells
 #' @param lambdas_ref matrix Either a named vector with gene names as names and normalized expression as values, or a matrix where rownames are genes and columns are pseudobulk names
 #' @param df_allele dataframe Allele counts per cell, produced by preprocess_allele
-#' @param genome character Genome version (hg38, hg19, or mm10) 
+#' @param gtf dataframe Transcript GTF, if NULL will use the default GTF for the specified genome 
+#' @param genome character Genome version (hg38, hg19, or mm10)
 #' @param out_dir string Output directory
 #' @param gamma numeric Dispersion parameter for the Beta-Binomial allele model
 #' @param t numeric Transition probability
@@ -42,6 +43,7 @@ NULL
 #' @param max_iter integer Maximum number of iterations to run the phyologeny optimization
 #' @param max_nni integer Maximum number of iterations to run NNI in the ML phylogeny inference
 #' @param min_depth integer Minimum allele depth 
+#' @param plot_min_depth integer Minimum allele depth to plot in pseudobulk HMM
 #' @param common_diploid logical Whether to find common diploid regions in a group of peusdobulks
 #' @param ncores integer Number of threads to use 
 #' @param ncores_nni integer Number of threads to use for NNI
@@ -64,10 +66,10 @@ NULL
 #' @return a status code
 #' @export
 run_numbat = function(
-        count_mat, lambdas_ref, df_allele, genome = 'hg38', 
+        count_mat, lambdas_ref, df_allele, gtf = NULL, genome = 'hg38', 
         out_dir = tempdir(), max_iter = 2, max_nni = 100, t = 1e-5, gamma = 20, min_LLR = 5,
         alpha = 1e-4, eps = 1e-5, max_entropy = 0.5, init_k = 3, min_cells = 50, tau = 0.3, nu = 1,
-        max_cost = ncol(count_mat) * tau, n_cut = 0, min_depth = 0, common_diploid = TRUE, min_overlap = 0.45, 
+        max_cost = ncol(count_mat) * tau, n_cut = 0, min_depth = 0, plot_min_depth = 8, common_diploid = TRUE, min_overlap = 0.45, 
         ncores = 1, ncores_nni = ncores, random_init = FALSE, segs_loh = NULL, call_clonal_loh = FALSE, 
         verbose = TRUE, diploid_chroms = NULL, segs_consensus_fix = NULL, use_loh = NULL, min_genes = 10,
         skip_nj = FALSE, multi_allelic = TRUE, p_multi = 1-alpha, 
@@ -81,16 +83,20 @@ run_numbat = function(
     log_appender(appender_file(logfile))
 
     ######### Basic checks #########
-    if (genome == 'hg38') {
-        gtf = gtf_hg38
-    } else if (genome == 'hg19') {
-        gtf = gtf_hg19
-    } else if (genome == 'mm10') {
-        gtf = gtf_mm10
-    } else {
-        stop('Genome version must be hg38, hg19, or mm10')
+    if (is.null(gtf)) {
+       if (genome == 'hg38') {
+            gtf = gtf_hg38
+        } else if (genome == 'hg19') {
+            gtf = gtf_hg19
+        } else if (genome == 'mm10') {
+            gtf = gtf_mm10
+        } else {
+            stop('Genome version must be hg38, hg19, or mm10')
+        } 
+    } else{
+        gtf = check_gtf_input(gtf)
     }
-
+    
     count_mat = check_matrix(count_mat)
     df_allele = annotate_genes(df_allele, gtf)
     df_allele = check_allele_df(df_allele)
@@ -148,6 +154,7 @@ run_numbat = function(
         glue('max_iter = {max_iter}'),
         glue('max_nni = {max_nni}'),
         glue('min_depth = {min_depth}'),
+        glue('plot_min_depth = {plot_min_depth}'),
         glue('use_loh = {ifelse(is.null(use_loh), "auto", use_loh)}'),
         glue('segs_loh = {ifelse(is.null(segs_loh), "None", "Given")}'),
         glue('call_clonal_loh = {call_clonal_loh}'),
@@ -313,7 +320,7 @@ run_numbat = function(
             fwrite(bulk_subtrees, glue('{out_dir}/bulk_subtrees_{i}.tsv.gz'), sep = '\t')
             
             if (plot) {
-                p = plot_bulks(bulk_subtrees, min_LLR = min_LLR, use_pos = TRUE, genome = genome)
+                p = plot_bulks(bulk_subtrees, min_LLR = min_LLR, use_pos = TRUE, genome = genome, min_depth = plot_min_depth)
                 ggsave(
                     glue('{out_dir}/bulk_subtrees_{i}.png'), p, 
                     width = 13, height = 2*length(unique(bulk_subtrees$sample)), dpi = 250
@@ -411,7 +418,7 @@ run_numbat = function(
         fwrite(bulk_clones, glue('{out_dir}/bulk_clones_{i}.tsv.gz'), sep = '\t')
 
         if (plot) {
-            p = plot_bulks(bulk_clones, min_LLR = min_LLR, use_pos = TRUE, genome = genome)
+            p = plot_bulks(bulk_clones, min_LLR = min_LLR, use_pos = TRUE, genome = genome, min_depth = plot_min_depth)
             ggsave(
                 glue('{out_dir}/bulk_clones_{i}.png'), p, 
                 width = 13, height = 2*length(unique(bulk_clones$sample)), dpi = 250
@@ -649,7 +656,7 @@ run_numbat = function(
     fwrite(bulk_clones, glue('{out_dir}/bulk_clones_final.tsv.gz'), sep = '\t')
 
     if (plot) {
-        p = plot_bulks(bulk_clones, min_LLR = min_LLR, use_pos = TRUE, genome = genome)
+        p = plot_bulks(bulk_clones, min_LLR = min_LLR, use_pos = TRUE, genome = genome, min_depth = plot_min_depth)
         ggsave(
             glue('{out_dir}/bulk_clones_final.png'), p, 
             width = 13, height = 2*length(unique(bulk_clones$sample)), dpi = 250

@@ -8,6 +8,7 @@ run_numbat(
   count_mat,
   lambdas_ref,
   df_allele,
+  gtf = NULL,
   genome = "hg38",
   out_dir = tempdir(),
   max_iter = 2,
@@ -25,6 +26,7 @@ run_numbat(
   max_cost = ncol(count_mat) * tau,
   n_cut = 0,
   min_depth = 0,
+  plot_min_depth = 8,
   common_diploid = TRUE,
   min_overlap = 0.45,
   ncores = 1,
@@ -51,6 +53,8 @@ run_numbat(
 \item{lambdas_ref}{matrix Either a named vector with gene names as names and normalized expression as values, or a matrix where rownames are genes and columns are pseudobulk names}
 
 \item{df_allele}{dataframe Allele counts per cell, produced by preprocess_allele}
+
+\item{gtf}{dataframe Transcript GTF, if NULL will use the default GTF for the specified genome}
 
 \item{genome}{character Genome version (hg38, hg19, or mm10)}
 
@@ -85,6 +89,8 @@ run_numbat(
 \item{n_cut}{integer Number of cuts on the phylogeny to define subclones}
 
 \item{min_depth}{integer Minimum allele depth}
+
+\item{plot_min_depth}{integer Minimum allele depth to plot in pseudobulk HMM}
 
 \item{common_diploid}{logical Whether to find common diploid regions in a group of peusdobulks}
 
