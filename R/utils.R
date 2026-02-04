@@ -1693,8 +1693,8 @@ calc_exp_LLR = function(Y_obs, lambda_ref, d, phi_mle, mu = NULL, sig = NULL, al
 #' @export
 detect_clonal_loh = function(bulk, t = 1e-5, snp_rate_loh = 5, min_depth = 0) {
 
-    bulk_snps = bulk %>% 
-        filter(!is.na(gene)) %>%
+    bulk_snps = bulk %>%
+        filter(!is.na(gene) & gene != "") %>%
         group_by(CHROM, gene, gene_start, gene_end) %>%
         summarise(
             gene_snps = sum(!is.na(AD[DP > min_depth]), na.rm = TRUE),

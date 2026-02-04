@@ -3,7 +3,11 @@
 #' @return NULL
 #' @keywords internal
 log_mem = function() {
-    m = pryr::mem_used()
+    # Get memory statistics from gc()
+    # gc() returns matrix: rows = Ncells/Vcells, columns include "used" (in MB)
+    # Sum both rows' "used" column (column 2) and convert MB to bytes
+    mem_stats = gc(reset = FALSE, full = FALSE, verbose = FALSE)
+    m = sum(mem_stats[, 2]) * 1024^2  # MB to bytes: * 1048576
     msg = paste0('Mem used: ', signif(m/1e9, 3), 'Gb')
     log_message(msg)
 }
